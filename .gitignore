@@ -1,0 +1,48 @@
+# ---- ESP-IDF build artifacts ----
+build/
+build_*/
+dependencies.lock
+managed_components/
+sdkconfig.old
+sdkconfig.bak
+
+# sdkconfig is generated from sdkconfig.defaults; keep defaults, ignore generated
+Heating/sdkconfig
+Sensor/sdkconfig
+
+# ---- Logs / runtime output ----
+*.log
+*.log.*
+boot.log
+
+# ---- Node.js ----
+node_modules/
+.opencode/node_modules/
+package-lock.json
+
+# ---- IDE / editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- OpenCode / IJFW workspace state (per-machine) ----
+.opencode/memory/active-session.json
+.opencode/memory/session-history/
+.opencode/memory/artifacts/
+.opencode/memory/cache/
+.opencode/memory/index/
+.opencode/memory/plugin-errors.log
+.opencode/memory/project-facts.auto.md
+.opencode/memory/tui-trace.log
+.ijfw/dump/
+.ijfw/sessions/
+
+# ---- Misc binaries ----
+*.bin
+*.elf
+*.map
+*.ota

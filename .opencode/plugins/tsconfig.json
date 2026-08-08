@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/solid",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "lib": ["ESNext"],
+    "types": ["node"],
+    "paths": {
+      "@opencode-ai/plugin": ["./node_modules/@opencode-ai/plugin/dist/index.d.ts"],
+      "@opencode-ai/plugin/tui": ["./node_modules/@opencode-ai/plugin/dist/tui.d.ts"]
+    }
+  },
+  "include": ["memory-tui.tsx"]
+}

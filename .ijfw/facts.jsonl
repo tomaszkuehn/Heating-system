@@ -1,0 +1,2 @@
+{"ts":"2026-08-08T21:53:25.727Z","memory_id":"m-aaf3851c87","source":"memory_store:decision","subject":"project","predicate":"build","object":"idf.py set-target esp32 && idf.py build (CMakeLists.txt + partitions.csv + sdkconfig.defaults w Sensor/).","confidence":0.6}
+{"ts":"2026-08-08T21:53:25.727Z","memory_id":"m-aaf3851c87","source":"memory_store:decision","subject":"project","predicate":"uwaga","object":"nie usuwać DS18x20_Temperature.ino — to oryginał referencyjny.","confidence":0.6}
