@@ -1,0 +1,225 @@
+/**
+ * Application entry point (spec sections 13 & 14).
+ *
+ * Wires the modules together, seeds a default configuration on first boot,
+ * recovers state after restart, arms the watchdog, and runs the control loop
+ * in its own task so the heating logic survives web/network failures.
+ */
+#include "app_config.h"
+#include "data_model.h"
+#include "storage_manager.h"
+#include "sensor_manager.h"
+#include "simulation_manager.h"
+#include "control_engine.h"
+#include "heating_output.h"
+#include "fault_manager.h"
+#include "network_manager.h"
+#include "web_ui_api.h"
+#include "notification_manager.h"
+#include "profile.h"
+#include "esp_ota_ops.h"
+#include "lora_receiver.h"
+
+#include <string.h>
+#include <stdio.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_task_wdt.h"
+#include "esp_system.h"
+
+static const char *TAG = "main";
+static system_config_t g_cfg;
+
+/* Seed a usable default configuration on first boot. */
+static void seed_defaults(system_config_t *c)
+{
+    memset(c, 0, sizeof(*c));
+    c->sensor_count = 3;
+    const char *names[3] = { "Salon", "Kuchnia", "Sypialnia" };
+    for (int i = 0; i < 3; i++) {
+        c->sensors[i].id = (uint8_t)(i + 1);
+        strncpy(c->sensors[i].name, names[i], HE_NAME_LEN - 1);
+        c->sensors[i].active = true;
+        c->sensors[i].weight = 1.0f / 3.0f;
+        c->sensors[i].calib_offset = 0;
+        c->sensors[i].comfort_offset = 0;
+        c->sensors[i].quality = QUAL_TIMEOUT;
+        c->sensors[i].sim_src = SIM_SRC_REAL;
+    }
+    c->has_external = true;
+    sensor_t *ext = &c->sensors[HE_MAX_SENSORS];
+    ext->id = 0; strncpy(ext->name, "Zewnatrz", HE_NAME_LEN - 1);
+    ext->active = true; ext->is_external = true; ext->quality = QUAL_TIMEOUT;
+    ext->sim_src = SIM_SRC_REAL;
+
+    profile_default(&c->profile);
+    c->pump.enabled = false;
+    c->pump.impulse_seconds = 5;
+    c->pump.period_seconds = 120;
+    c->pump.total_seconds = 600;
+    c->emergency.enabled = HE_DEFAULT_EMERGENCY_ENABLED;
+    c->emergency.on_seconds = HE_DEFAULT_EMERGENCY_ON_SEC;
+    c->emergency.period_seconds = HE_DEFAULT_EMERGENCY_PERIOD_SEC;
+    c->emergency_on_sensor_fault = HE_DEFAULT_EMERGENCY_ON_SENSOR_FAULT;
+    /* notify_ev_* are intentionally left 0 from memset; repair_config() applies the
+     * ON defaults once via the notify_ev_ver sentinel (so first boot and upgrade
+     * both preserve the pre-feature behavior of always e-mailing faults+restart). */
+    c->fault_grace_sec = HE_DEFAULT_FAULT_GRACE_SEC;
+    c->max_on_sec = HE_DEFAULT_MAX_ON_SEC;
+    c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    c->min_on_sec = HE_DEFAULT_MIN_ON_SEC;
+    c->min_off_sec = HE_DEFAULT_MIN_OFF_SEC;
+    c->anti_osc_lock_sec = HE_DEFAULT_ANTIOSC_LOCK_SEC;
+    c->smtp_port = HE_DEFAULT_SMTP_PORT;
+    strncpy(c->panel_user, HE_DEFAULT_PANEL_USER, sizeof(c->panel_user) - 1);
+    strncpy(c->panel_pass, HE_DEFAULT_PANEL_PASS, sizeof(c->panel_pass) - 1);
+    strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
+    c->wifi_sta_mode = false;
+    strncpy(c->wifi_ssid, HE_DEFAULT_AP_SSID, sizeof(c->wifi_ssid) - 1);
+    strncpy(c->wifi_pass, HE_DEFAULT_AP_PASS, sizeof(c->wifi_pass) - 1);
+}
+
+/* Clamp/repair a loaded configuration that may have been corrupted. */
+static void repair_config(system_config_t *c)
+{
+    if (c->sensor_count < 1) c->sensor_count = 1;
+    if (c->sensor_count > HE_MAX_SENSORS) c->sensor_count = HE_MAX_SENSORS;
+    int eh; char em[48];
+    if (!profile_validate(&c->profile, &eh, em, sizeof(em))) profile_default(&c->profile);
+    /* In AP mode a password shorter than 8 chars cannot form a WPA2 key and
+     * would silently drop the AP to an open network — repair it to the default
+     * so the access point always comes up secured. */
+    if (!c->wifi_sta_mode && strlen(c->wifi_pass) < 8) {
+        strncpy(c->wifi_pass, HE_DEFAULT_AP_PASS, sizeof(c->wifi_pass) - 1);
+        c->wifi_pass[sizeof(c->wifi_pass) - 1] = '\0';
+    }
+    /* Protection limits + device name: an upgraded/short-read NVS blob can leave
+     * these 0/empty. fault_grace_sec==0 in particular would trip NO_HEAT_RISE on
+     * the first heating tick (no zero-fallback historically). Clamp to defaults. */
+    if (c->fault_grace_sec < 60)  c->fault_grace_sec  = HE_DEFAULT_FAULT_GRACE_SEC;
+    if (c->max_on_sec < 60)       c->max_on_sec       = HE_DEFAULT_MAX_ON_SEC;
+    if (c->max_on_break_sec < 60) c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    /* User-configurable hysteresis timing: an upgraded device zero-fills these
+     * tail fields to 0. Below the floor they would enable instant toggling
+     * (relay chatter); above the ceiling they stall heating. Reset to default. */
+    if (c->min_on_sec < HE_MIN_ON_OFF_FLOOR || c->min_on_sec > 3600)
+        c->min_on_sec = HE_DEFAULT_MIN_ON_SEC;
+    if (c->min_off_sec < HE_MIN_ON_OFF_FLOOR || c->min_off_sec > 3600)
+        c->min_off_sec = HE_DEFAULT_MIN_OFF_SEC;
+    if (c->anti_osc_lock_sec < HE_ANTIOSC_FLOOR || c->anti_osc_lock_sec > 600)
+        c->anti_osc_lock_sec = HE_DEFAULT_ANTIOSC_LOCK_SEC;
+    /* Dedicated SMTP port: an upgraded device zero-fills this tail field to 0,
+     * which means "use host:port or default 25", so the only repair needed is to
+     * treat out-of-range values as the default. */
+    if (c->smtp_port < 1 || c->smtp_port > 65535) c->smtp_port = HE_DEFAULT_SMTP_PORT;
+    /* Panel auth: an upgraded/short-read blob leaves these empty -> defaults.
+     * A too-short password (post-upgrade zero-fill artefact) is also repaired. */
+    if (c->panel_user[0] == '\0')
+        strncpy(c->panel_user, HE_DEFAULT_PANEL_USER, sizeof(c->panel_user) - 1);
+    c->panel_user[sizeof(c->panel_user) - 1] = '\0';
+    if (strlen(c->panel_pass) < HE_PANEL_PASS_MIN) {
+        strncpy(c->panel_pass, HE_DEFAULT_PANEL_PASS, sizeof(c->panel_pass) - 1);
+        c->panel_pass[sizeof(c->panel_pass) - 1] = '\0';
+    }
+    if (c->device_name[0] == '\0') {
+        strncpy(c->device_name, HE_DEFAULT_DEVICE_NAME, sizeof(c->device_name) - 1);
+        c->device_name[sizeof(c->device_name) - 1] = '\0';
+    }
+    /* Per-event-type e-mail subscription: an upgraded device zero-fills these tail
+     * fields (notify_ev_ver==0). Preserve the pre-feature behavior — faults+restart
+     * always e-mailed — by defaulting both ON once. Afterwards the user's choice
+     * sticks (ver stays 1, so an explicit OFF is respected on later boots). */
+    if (c->notify_ev_ver == 0) {
+        c->notify_ev_faults  = true;
+        c->notify_ev_restart = true;
+        c->notify_ev_ver = 1;
+    }
+}
+
+static void control_task(void *arg)
+{
+    esp_task_wdt_add(NULL);
+    TickType_t last = xTaskGetTickCount();
+    /* OTA self-test: after 3 minutes of stable control-loop operation mark this
+     * app valid (cancels rollback). Until then the bootloader would roll back
+     * to the previous slot on an unexpected reset; esp_ota_begin refuses a new
+     * upload while the running app is still PENDING_VERIFY. */
+    bool ota_confirmed = false;
+    int stable_sec = 0;
+    while (1) {
+        he_config_lock();
+        sensor_manager_poll();
+        TickType_t now = xTaskGetTickCount();
+        int dt = (int)((now - last) * portTICK_PERIOD_MS);
+        last = now;
+        if (dt <= 0) dt = HE_CONTROL_TICK_MS;
+        control_tick(dt);
+        he_config_unlock();
+        if (!ota_confirmed && (stable_sec += HE_CONTROL_TICK_MS / 1000) >= 180) {
+            ota_confirmed = true;
+            if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
+                ESP_LOGI(TAG, "OTA app confirmed (rollback cancelled)");
+        }
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(HE_CONTROL_TICK_MS));
+    }
+}
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "ESP32 heating controller booting");
+
+    /* Config lock must exist before any task can touch the shared config. */
+    he_config_lock_init();
+
+    /* Persistent storage (NVS + LittleFS). */
+    storage_init();
+
+    /* Load or seed configuration. */
+    esp_err_t err = storage_load_config(&g_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "no saved config -> seeding defaults");
+        seed_defaults(&g_cfg);
+        storage_save_config(&g_cfg);
+    }
+    repair_config(&g_cfg);
+
+    /* Detect unexpected restart (spec 7). */
+    esp_reset_reason_t rr = esp_reset_reason();
+    if (rr != ESP_RST_POWERON && rr != ESP_RST_SW && rr != ESP_RST_DEEPSLEEP) {
+        ESP_LOGW(TAG, "unexpected restart reason=%d", (int)rr);
+        storage_log_event(FAULT_RESTART, 2, "unexpected restart detected");
+    }
+
+    /* Modules (control layer first, so it is independent of comms). */
+    simulation_init();
+    sensor_manager_init();
+    sensor_manager_bind(g_cfg.sensors, g_cfg.sensor_count,
+                        g_cfg.has_external ? &g_cfg.sensors[HE_MAX_SENSORS] : NULL);
+
+    /* LoRa receiver: temperature frames from the remote DS18x20 node. Must
+     * start after sensor_manager is bound so updates route to live sensors. */
+    lora_receiver_init();
+
+    heating_output_init();
+    heating_output_set_simulation(g_cfg.simulate_heating, false);
+
+    fault_manager_init();
+    fault_manager_bind_config(&g_cfg);
+
+    control_init();
+    control_bind_config(&g_cfg);
+
+    notification_init();
+
+    /* Communication / presentation layers. */
+    network_init(&g_cfg);
+    network_start_reset_button(&g_cfg);
+    web_ui_init(&g_cfg);
+
+    /* Control loop (watchdog-guarded). */
+    xTaskCreate(control_task, "control", 6144, NULL, 5, NULL);
+    ESP_LOGI(TAG, "system ready");
+}

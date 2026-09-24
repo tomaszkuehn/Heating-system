@@ -1,0 +1,68 @@
+# --- Flash / partitions ---
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- FreeRTOS ---
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y
+
+# --- Watchdog ---
+CONFIG_ESP_TASK_WDT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_TASK_WDT_EN=y
+
+# --- WiFi ---
+CONFIG_ESP_WIFI_ENABLED=y
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+# The SoftAP config path (network_manager.c) hard-codes WPA2_PSK; the firmware
+# never uses WPA3/SAE/OWE or WPS. Disabling them drops the SAE/Dragonfly/OWE
+# crypto from libwpa_supplicant.a (~hundreds of KB of flash) with no behaviour
+# change for this device.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+# CONFIG_WPS is already off (no app code references WPS).
+
+# --- Ethernet (WT32-ETH01 V1.4, LAN8720 PHY at address 0) ---
+# RMII data pins are hardwired in ESP32 silicon. 50 MHz oscillator on GPIO0.
+# GPIO16 powers the PHY + oscillator (driven HIGH by network_manager.c).
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_ESP32_EMAC=y
+CONFIG_ETH_PHY_INTERFACE_RMII=y
+CONFIG_ETH_RMII_CLK_INPUT=y
+CONFIG_ETH_RMII_CLK_IN_GPIO=0
+CONFIG_ETH_DMA_BUFFER_SIZE=512
+CONFIG_ETH_DMA_BUFFER_CNT=3
+CONFIG_ETH_PHY_LAN87XX=y
+
+# --- OTA (firmware upload over Ethernet/WiFi via web UI) ---
+CONFIG_APP_ROLLBACK_ENABLE=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# --- HTTP server ---
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
+CONFIG_HTTPD_MAX_URI_LEN=1024
+CONFIG_HTTPD_PURGE_BUF_LEN=256
+
+# --- LWIP ---
+CONFIG_LWIP_MAX_SOCKETS=12
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# --- Main task stack ---
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# --- mbedTLS (opportunistic STARTTLS for SMTP only) ---
+# The SMTP client upgrades to TLS with MBEDTLS_SSL_VERIFY_NONE (no chain
+# validation), and nothing else in the firmware performs TLS server-side or
+# certificate verification. So we drop the ~50 KB embedded CA bundle and the
+# TLS server handshake code to keep the app inside the 1 MB factory partition.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+CONFIG_MBEDTLS_TLS_SERVER=n
+CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y

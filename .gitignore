@@ -1,10 +1,11 @@
-# ---- ESP-IDF build artifacts ----
+# ---- ESP-IDF build artifacts (both projects) ----
 build/
 build_*/
 dependencies.lock
 managed_components/
 sdkconfig.old
 sdkconfig.bak
+sdkconfig
 
 # sdkconfig is generated from sdkconfig.defaults; keep defaults, ignore generated
 Heating/sdkconfig
@@ -38,11 +39,13 @@ Thumbs.db
 .opencode/memory/plugin-errors.log
 .opencode/memory/project-facts.auto.md
 .opencode/memory/tui-trace.log
-.ijfw/dump/
-.ijfw/sessions/
+ijfw/
+.ijfw/
+.claude/
 
-# ---- Misc binaries ----
+# ---- Misc binaries / build outputs ----
 *.bin
 *.elf
 *.map
 *.ota
+firmware/

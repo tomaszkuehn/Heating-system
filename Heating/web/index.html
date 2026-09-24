@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Kontroler ogrzewania ESP32</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="authOverlay" class="auth-overlay hidden">
+  <div class="auth-box">
+    <h2 style="margin:0 0 4px">Kontroler ogrzewania</h2>
+    <p style="margin:0 0 12px;font-size:13px;color:var(--muted)">Zaloguj się, aby kontynuować</p>
+    <label>Login<input id="authUser" class="inp" value="admin" autocomplete="username"></label>
+    <label>Hasło<input id="authPass" class="inp" type="password" autocomplete="current-password"></label>
+    <button id="btnAuthLogin" class="btn" style="width:100%;margin-top:8px">Zaloguj</button>
+    <div id="authErr" style="color:var(--err);font-size:13px;margin-top:6px;min-height:16px"></div>
+  </div>
+</div>
+<div id="simBanner" class="sim-banner hidden">
+  ⚠ TRYB SYMULACJI AKTYWNY — sygnały nie trafiają na fizyczne GPIO (chyba że włączono tryb mieszany)
+</div>
+
+<main>
+  <!-- Dashboard -->
+  <section class="card">
+    <div class="dash-header">
+      <h2 id="devName" style="margin:0;cursor:pointer" title="Kliknij, aby zmienić nazwę">--</h2>
+      <div class="dash-status">
+        <span id="healthMark" class="mark mark-ok">Zdrowy</span>
+        <span id="stateMark" class="state">IDLE</span>
+        <span id="clockTime" style="font-size:13px;color:var(--text);font-family:monospace;font-weight:600">--:--:--</span>
+        <span id="timeSync" style="font-size:12px;color:var(--muted)">🕐</span>
+        <span id="devIp" style="font-size:12px;color:var(--accent);font-family:monospace">--</span>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="tile"><div class="k">Temp. systemowa</div><div id="sysTemp" class="v">--</div></div>
+      <div class="tile"><div class="k">Temp. zewn.</div><div id="extTemp" class="v">--</div></div>
+      <div class="tile"><div class="k">Czujniki OK</div><div id="sensOk" class="v">--</div></div>
+      <div class="tile"><div class="k">Uptime</div><div id="uptime" class="v">--</div></div>
+      <div class="tile">
+        <div class="k">Pamięć flash (dane)</div>
+        <div id="flashV" class="v" style="font-size:16px">--</div>
+        <div class="pbar"><div id="flashBar" class="pbar-fill"></div></div>
+        <div id="flashWear" style="font-size:11px;margin-top:4px;color:var(--muted)"></div>
+      </div>
+      <div class="tile">
+        <div class="k">Czas grzania (24h)</div>
+        <div id="heatTime" class="v">0 min</div>
+      </div>
+      <div class="tile" style="text-align:center">
+        <div class="k">Status pieca</div>
+        <div id="boilerCircle" class="boiler-circle">
+          <span id="boilerIcon" class="boiler-icon"></span>
+        </div>
+        <div id="boilerStatus" class="boiler-label">Włączony</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btnBoost" class="btn">Grzanie 5 min (BOOST)</button>
+      <button id="btnFault" class="btn">Wyczyść awarię</button>
+      <span style="position:relative;display:inline-flex;align-items:center;gap:6px">
+        <button id="btnKill" class="btn btn-danger">Wyłącz ogrzewanie</button>
+        <span id="killConfirm" style="display:none;align-items:center;gap:4px;background:#1a1015;border:1px solid var(--err);border-radius:8px;padding:4px 8px">
+          <span style="font-size:12px;color:var(--err);white-space:nowrap">Na pewno?</span>
+          <button id="killYes" class="btn btn-danger" style="padding:4px 10px;font-size:12px">Tak</button>
+          <button id="killNo" class="btn" style="padding:4px 10px;font-size:12px;background:#333">Nie</button>
+        </span>
+      </span>
+    </div>
+    <div id="faultInfo" class="fault hidden"></div>
+  </section>
+
+  <!-- Sensors -->
+  <section class="card">
+    <h2>Czujniki — wagi / offsety</h2>
+    <div class="actions" style="margin:0 0 8px">
+      <span class="k" style="color:var(--muted);font-size:13px;align-self:center">Liczba czujników wewn.:</span>
+      <button id="btnSensDec" class="btn" style="padding:6px 12px">−</button>
+      <span id="sensCount" class="v" style="font-size:16px;align-self:center">--</span>
+      <button id="btnSensInc" class="btn" style="padding:6px 12px">+</button>
+    </div>
+    <div class="tbl-scroll">
+    <table class="tbl" id="sensorsTable">
+      <thead><tr><th>ID</th><th>Nazwa</th><th>Aktywny</th><th>Waga</th><th>Offset kal.</th><th>Offset komf.</th><th>Health</th><th>Jakość</th><th>Temp eff.</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <div id="sensorDetail" class="sensor-detail hidden">
+      <div class="sensor-detail-header">
+        <span id="sensorDetailTitle" style="font-weight:700"></span>
+        <button id="sensorDetailClose" class="btn" style="padding:2px 8px;font-size:12px;background:#333">✕</button>
+      </div>
+      <div id="sensorDetailBody" style="font-size:13px;color:var(--muted);margin-top:6px"></div>
+    </div>
+  </section>
+
+  <!-- Charts -->
+  <section class="card">
+    <h2>Temperatury — ostatnie 24 h</h2>
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+      <div id="zoomBar" style="display:flex;gap:4px">
+        <button class="btn zoom-btn sel" data-h="24" style="padding:5px 10px;font-size:12px">24h</button>
+        <button class="btn zoom-btn" data-h="12" style="padding:5px 10px;font-size:12px">12h</button>
+        <button class="btn zoom-btn" data-h="6" style="padding:5px 10px;font-size:12px">6h</button>
+        <button class="btn zoom-btn" data-h="1" style="padding:5px 10px;font-size:12px">1h</button>
+      </div>
+      <div id="sensorToggles" style="display:flex;align-items:center;flex-wrap:wrap"></div>
+    </div>
+    <canvas id="chart24" height="220"></canvas>
+    <h2>Zużycie energii (minuty grzania) — 12 miesięcy (słupki) + śr. systemowa (linia)</h2>
+    <canvas id="chartDaily" height="180"></canvas>
+  </section>
+
+  <!-- Profile -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Profil dobowy (24 h)</h2>
+    <div class="profile-grid" id="profileGrid"></div>
+    <div class="actions">
+      <button id="btnProfileApply" class="btn">Zastosuj (waliduj + zapisz)</button>
+    </div>
+    <div class="profile-slots" style="margin-top:8px">
+      <span style="font-size:13px;color:var(--muted);margin-right:4px">Profile:</span>
+      <span class="pslot-label">1</span>
+      <button class="btn pslot-load" data-slot="1">Wczytaj</button>
+      <button class="btn pslot-save" data-slot="1" style="background:#444">Zapisz</button>
+      <span class="pslot-label" style="margin-left:8px">2</span>
+      <button class="btn pslot-load" data-slot="2">Wczytaj</button>
+      <button class="btn pslot-save" data-slot="2" style="background:#444">Zapisz</button>
+      <span class="pslot-label" style="margin-left:8px">3</span>
+      <button class="btn pslot-load" data-slot="3">Wczytaj</button>
+      <button class="btn pslot-save" data-slot="3" style="background:#444">Zapisz</button>
+    </div>
+    <div class="profile-slots" style="margin-top:8px;gap:8px">
+      <button id="btnProfileExport" class="btn" style="background:#444;font-size:12px;padding:5px 10px">📥 Eksportuj do pliku</button>
+      <button id="btnProfileImport" class="btn" style="background:#444;font-size:12px;padding:5px 10px">📤 Wczytaj z pliku</button>
+      <input type="file" id="profileFileInput" accept=".json" style="display:none">
+    </div>
+  </section>
+
+  <!-- Pump / Emergency -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Wybieg pompy / tryb awaryjny</h2>
+    <label><input type="checkbox" id="pumpEn"> włączony (wybieg pompy)</label>
+    <div class="grid3">
+      <label>Impuls (s)<input type="number" id="pumpImpulse" class="inp"></label>
+      <label>Okres (s)<input type="number" id="pumpPeriod" class="inp"></label>
+      <label>Suma (s)<input type="number" id="pumpTotal" class="inp"></label>
+    </div>
+    <button id="btnPump" class="btn">Zapisz</button>
+    <h3>Tryb awaryjny periodyczny</h3>
+    <label><input type="checkbox" id="emEn"> włączony</label>
+    <div class="grid3">
+      <label>Czas ON (s)<input type="number" id="emOn" class="inp"></label>
+      <label>Okres (s)<input type="number" id="emPeriod" class="inp"></label>
+    </div>
+    <label><input type="checkbox" id="emFault"> awaryjne grzanie przy awarii WSZYSTKICH czujników (Czas ON / Okres jak wyżej)</label>
+    <button id="btnEm" class="btn">Zapisz</button>
+  </section>
+
+  <!-- Limits -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Zabezpieczenia i limity</h2>
+    <div class="grid3">
+      <label>Karencja FAULT_NO_HEAT_RISE (s)<input type="number" id="limGrace" class="inp" min="60" max="3600"></label>
+      <label>Maks. ciągłe grzanie (s)<input type="number" id="limMaxOn" class="inp" min="300" max="86400"></label>
+      <label>Przerwa po maks. grzaniu (s)<input type="number" id="limBreak" class="inp" min="60" max="86400"></label>
+    </div>
+    <h3 style="margin:10px 0 4px">Histereza (timery anty-migotaniowe)</h3>
+    <div class="grid3">
+      <label>Min. czas grzania (s)<input type="number" id="limMinOn" class="inp" min="30" max="3600"></label>
+      <label>Min. czas przerwy (s)<input type="number" id="limMinOff" class="inp" min="30" max="3600"></label>
+      <label>Blokada antyosc. (s)<input type="number" id="limAntiosc" class="inp" min="30" max="600"></label>
+    </div>
+    <button id="btnLimits" class="btn">Zapisz limity</button>
+  </section>
+
+  <!-- Network -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Sieć</h2>
+    <label><input type="checkbox" id="netSta"> tryb klient (odznacz = AP domyślne)</label>
+    <label>SSID<input id="netSsid" class="inp"></label>
+    <label>Hasło<input id="netPass" class="inp" type="password"></label>
+    <button id="btnNet" class="btn">Zapisz i zastosuj</button>
+    <h3 style="margin:10px 0 4px">Konto (panel WWW)</h3>
+    <label>Obecne hasło<input id="accCur" class="inp" type="password" autocomplete="current-password"></label>
+    <label>Nowe hasło<input id="accNew" class="inp" type="password" autocomplete="new-password"></label>
+    <div class="actions" style="margin-top:8px">
+      <button id="btnAccPass" class="btn">Zmień hasło</button>
+      <button id="btnLogout" class="btn" style="background:#444">Wyloguj</button>
+    </div>
+    <div id="accMsg" style="font-size:13px;color:var(--muted);margin-top:6px;min-height:16px"></div>
+  </section>
+
+  <!-- Notifications -->
+  <section class="card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Powiadomienia (e-mail / SMS)</h2>
+    <label><input type="checkbox" id="nEmail"> e-mail</label>
+    <label>Odbiorca<input id="nEmailTo" class="inp"></label>
+    <label>Serwer SMTP<input id="nSmtpHost" class="inp"></label>
+    <label>Port<input id="nSmtpPort" class="inp" type="number" min="1" max="65535"></label>
+    <label>Użytkownik<input id="nSmtpUser" class="inp"></label>
+    <label>Hasło<input id="nSmtpPass" class="inp" type="password"></label>
+    <label><input type="checkbox" id="nSms"> SMS</label>
+    <label>Telefon<input id="nSmsPhone" class="inp"></label>
+    <label>Brama SMS<input id="nSmsGw" class="inp"></label>
+    <button id="btnNotify" class="btn">Zapisz</button>
+    <button id="btnNotifyTest" class="btn" style="margin-left:8px">Testuj e-mail</button>
+    <pre id="notifyResult" style="font-size:11px;color:var(--muted);margin-top:8px;white-space:pre-wrap;max-height:200px;overflow:auto;display:none"></pre>
+    <h3 style="margin:8px 0 4px">Typy zdarzeń (e-mail)</h3>
+    <label><input type="checkbox" id="nEvFaults"> powiadomienia o awariach</label>
+    <label><input type="checkbox" id="nEvRestart"> powiadomienia o resecie</label>
+    <button id="btnNotifyEv" class="btn" style="margin-top:4px">Zapisz typy zdarzeń</button>
+  </section>
+
+  <!-- Simulation -->
+  <section class="card sim-card collapsible collapsed">
+    <h2 class="card-toggle"><span class="chev">▸</span> Symulacja</h2>
+    <p class="warn">Symulacja czujników / ogrzewania służy testom bez sprzętu.</p>
+    <label><input type="checkbox" id="simHeat"> symulacja ogrzewania (bez GPIO)</label>
+    <label><input type="checkbox" id="simMixed"> tryb mieszany (GPIO aktywne — lab)</label>
+    <label><input type="checkbox" id="simAccel"> przyspieszony czas ×10 (szybka symulacja)</label>
+    <label>Tryb odpowiedzi
+      <select id="simMode" class="inp">
+        <option value="0">Skuteczne grzanie</option>
+        <option value="1">Nieskuteczne grzanie</option>
+        <option value="2">Przegrzewanie</option>
+      </select>
+    </label>
+    <div class="grid3">
+      <label>Szybkość grzania<input id="simHR" class="inp" value="0.04"></label>
+      <label>Szybkość stygnięcia<input id="simCR" class="inp" value="0.006"></label>
+      <label>Bezwładność<input id="simIn" class="inp" value="0.10"></label>
+    </div>
+    <button id="btnSimHeat" class="btn">Zastosuj sym. ogrzewania</button>
+    <h3>Symulacja pojedynczego czujnika</h3>
+    <div class="grid3">
+      <label>Czujnik<input id="simSenId" class="inp" placeholder="id"></label>
+      <label>Źródło
+        <select id="simSenSrc" class="inp">
+          <option value="0">Rzeczywisty</option>
+          <option value="1">Stała</option>
+          <option value="2">Narastający</option>
+          <option value="3">Nagły spadek</option>
+          <option value="4">Brak odpowiedzi</option>
+          <option value="5">Poza zakresem</option>
+          <option value="6">Wirtualny (model)</option>
+        </select>
+      </label>
+      <label>Wartość bazowa<input id="simSenBase" class="inp" value="20"></label>
+    </div>
+    <button id="btnSimSen" class="btn">Zastosuj sym. czujnika</button>
+  </section>
+
+  <!-- Logs + Diagnostics -->
+  <section class="card">
+    <h2>Diagnostyka</h2>
+    <pre id="diag" class="mono"></pre>
+    <h2>Logi / alarmy</h2>
+    <div style="display:flex;justify-content:flex-end;margin:0 0 6px"><button id="btnLogClear" class="btn" style="padding:4px 14px;font-size:13px">Wyczyść log</button></div>
+    <div id="log" class="log mono"></div>
+  </section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

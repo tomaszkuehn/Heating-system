@@ -1,0 +1,14 @@
+# Name,     Type, SubType, Offset,   Size,    Flags
+# NVS: key/value configuration (network, sensors, weights, offsets, flags).
+nvs,        data, nvs,     0x9000,   0x6000,
+# PHY calibration data.
+phy_init,   data, phy,     0xf000,   0x1000,
+# OTA: two app slots for A/B firmware updates over Ethernet/WiFi.
+# Each 3 MB; factory → ota_0 (first boot), ota_1 for the upload target.
+ota_0,      app,  ota_0,   0x10000,  0x300000,
+ota_1,      app,  ota_1,   0x310000, 0x300000,
+# OTA data: selects which slot to boot.
+otadata,    data, ota,     0x610000, 0x2000,
+# LittleFS: user files, daily profiles, exports, history & logs.
+# Remaining flash tail (~1.8 MB) — enough for history/logs/config exports.
+storage,    data, spiffs,  0x612000, 0x1EE000,

@@ -1,4 +1,0 @@
-[submodule "Heating"]
-	path = Heating
-	url = ./Heating
-	branch = main
