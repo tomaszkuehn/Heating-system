@@ -18,7 +18,10 @@ extern "C" {
 
 /* ---- Limits (spec section 2, 3, 5) ---- */
 #define HE_MAX_SENSORS          6       /* 1..6 internal sensors               */
-#define HE_MOVING_AVG_WINDOW    7       /* moving average over last 7 readings */
+#define HE_MOVING_AVG_WINDOW    8       /* moving average over last 8 readings */
+/* Radio-link health: a sensor is "degraded" (yellow) when more than this
+ * share of expected readings is missing in the sliding loss window. */
+#define HE_LOSS_WARN_PCT        30.0f
 #define HE_PROFILE_HOURS        24      /* one threshold pair per hour         */
 #define HE_NAME_LEN             32
 #define HE_LOG_INTERVAL_SEC     60      /* record temperatures each minute     */
@@ -102,6 +105,15 @@ typedef struct {
     float              sim_base;
     float              sim_rate;           /* degC per minute (ramp)           */
     float              sim_target;
+
+    /* ---- Radio (LoRa) reception bookkeeping ----
+     * Loss-rate window: the ring of arrival times of the last N accepted
+     * frames lets us estimate how many frames were LOST between them.
+     * loss_pct = missed / expected over the window span. */
+    uint32_t           rx_ms[HE_MOVING_AVG_WINDOW];  /* arrival time of slot  */
+    int                rx_count;                     /* valid slots in ring   */
+    int                rx_head;                      /* next write index      */
+    float              loss_pct;          /* 0..100+, recomputed on arrival   */
 } sensor_t;
 
 /* ---- Daily profile (spec section 5.1) ---- */

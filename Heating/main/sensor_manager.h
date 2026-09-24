@@ -44,6 +44,11 @@ void sensor_manager_restore(int id);
  * disabled/simulated. */
 void sensor_manager_lora_update(int id, float temperature);
 
+/* Record a radio-frame arrival for a sensor and update its loss estimate
+ * (missed/expected over the sliding window of the last 8 arrival slots).
+ * Called by sensor_manager_lora_update. Exposed for tests. */
+void sensor_manager_note_rx(sensor_t *s);
+
 /* Frame protocol constants (external sensor interface). */
 #define HE_FRAME_START  0xAA
 #define HE_FRAME_END    0x55

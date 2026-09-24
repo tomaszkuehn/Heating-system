@@ -45,6 +45,9 @@ extern "C" {
 #define HE_LORA_MODE_CONFIG    1
 #define HE_LORA_RX_TASK_STACK   3072
 #define HE_LORA_LINE_MAX        48             /* max length of one frame  */
+/* Nominal period between radio frames from a sensor node (~5.5 s measured on
+ * the air with the current node firmware). Used for loss-rate estimation. */
+#define HE_LORA_FRAME_PERIOD_MS 6000
 
 /* ---- Ethernet (WT32-ETH01 V1.4 — LAN8720 PHY) ----
  * RMII data pins are hardwired in the ESP32 silicon. 50 MHz clock from the

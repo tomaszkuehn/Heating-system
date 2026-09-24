@@ -88,6 +88,59 @@ static void push_reading(sensor_t *s, float raw)
     s->last_update_ms = mono_ms();
 }
 
+/* ---- Radio-link loss estimation (spec: yellow at >30% lost) ----
+ * On every accepted radio frame, record its arrival time in the per-sensor
+ * ring. Between two consecutive arrivals, expected = elapsed / period;
+ * missed = expected - 1 (this arrival). Summing over the whole ring span
+ * gives loss_pct over a sliding window of up to 8 frames. Frames arriving
+ * faster than half the period are treated as duplicates (ignored for loss
+ * accounting but still accepted as fresh data). */
+void sensor_manager_note_rx(sensor_t *s)
+{
+    uint32_t now = mono_ms();
+
+    if (s->rx_count == 0) {
+        s->rx_ms[s->rx_head] = now;
+        s->rx_head = (s->rx_head + 1) % HE_MOVING_AVG_WINDOW;
+        s->rx_count = 1;
+        s->loss_pct = 0.0f;
+        return;
+    }
+
+    int prev = (s->rx_head + HE_MOVING_AVG_WINDOW - 1) % HE_MOVING_AVG_WINDOW;
+    uint32_t last = s->rx_ms[prev];
+    uint32_t gap = now - last;
+
+    /* Duplicate / burst arrival inside the same slot: refresh timestamp so a
+     * retransmission does not distort the gap, but add no loss. */
+    if (gap < HE_LORA_FRAME_PERIOD_MS / 2) {
+        s->rx_ms[prev] = now;
+        return;
+    }
+
+    s->rx_ms[s->rx_head] = now;
+    s->rx_head = (s->rx_head + 1) % HE_MOVING_AVG_WINDOW;
+    if (s->rx_count < HE_MOVING_AVG_WINDOW) s->rx_count++;
+
+    /* Loss over the covered span. With only 2 slots we know 1 interval;
+     * with k slots we know k-1 intervals: use the newest interval only
+     * when the ring is not yet full, and the full span when it is. */
+    if (s->rx_count >= 2) {
+        int oldest = s->rx_head;   /* after advance, head == oldest slot */
+        uint32_t span = now - s->rx_ms[oldest];
+        int intervals = s->rx_count - 1;
+        if (intervals > 0 && span > 0) {
+            int expected = (int)((span + HE_LORA_FRAME_PERIOD_MS / 2) /
+                                 HE_LORA_FRAME_PERIOD_MS);
+            int missed = expected - intervals;
+            if (missed < 0) missed = 0;   /* clock jitter tolerance */
+            float pct = 100.0f * (float)missed /
+                        (float)(missed + intervals);
+            s->loss_pct = pct;
+        }
+    }
+}
+
 /* Open-window detection (spec 6.1): rate of drop + comparison with others. */
 static void window_detect(sensor_t *s, int idx)
 {
@@ -140,6 +193,10 @@ static void window_detect(sensor_t *s, int idx)
 static void stale_detect(sensor_t *s, int idx)
 {
     if (idx < 0 || idx >= HE_MAX_SENSORS) return;
+    /* A radio-fed sensor reporting a genuinely stable room temperature is not
+     * "stale" — the probe is fine, the physics is just quiet. Drift/stale
+     * detection only makes sense for polled wired probes. */
+    if (s->rx_count > 0) return;
     int64_t now = esp_timer_get_time();
     if (isnan(s_prev_eff[idx])) { s_prev_eff[idx] = s->last_effective; s_last_change_us[idx] = now; return; }
 
@@ -274,12 +331,25 @@ void sensor_manager_poll(void)
              * left from when it was active so the UI never shows the ⊗ mark for a
              * sensor that is no longer being polled. */
             s->window_open = false;
+            /* Radio bookkeeping is meaningless while disabled. */
+            s->rx_count = 0;
+            s->loss_pct = 0.0f;
             continue;
         }
         if (s->simulated) { continue; }
         if (s->quality == QUAL_OK) {
             if ((mono_ms() - s->last_update_ms) > HE_SENSOR_TIMEOUT_SEC * 1000)
                 s->quality = QUAL_TIMEOUT;
+        }
+        /* Radio-linked sensors: no arrival for a full window means every
+         * expected frame in that window was lost -> force the loss estimate
+         * upward instead of leaving it frozen at the last arrival. */
+        if (s->rx_count > 0) {
+            uint32_t since = mono_ms() - s->rx_ms[(s->rx_head + HE_MOVING_AVG_WINDOW - 1) % HE_MOVING_AVG_WINDOW];
+            uint32_t win = (uint32_t)HE_MOVING_AVG_WINDOW * HE_LORA_FRAME_PERIOD_MS;
+            if (since > win + HE_LORA_FRAME_PERIOD_MS) {
+                s->loss_pct = 100.0f;
+            }
         }
     }
 
@@ -354,9 +424,10 @@ void sensor_manager_lora_update(int id, float temperature)
     if (!target) return;
     if (!target->active || target->simulated) return;
 
-    push_reading(target, temperature);
-    if (temperature < HE_TEMP_MIN_LOGICAL || temperature > HE_TEMP_MAX_LOGICAL)
-        target->quality = QUAL_OUT_OF_RANGE;
-    else
-        target->quality = QUAL_OK;
+      push_reading(target, temperature);
+      sensor_manager_note_rx(target);
+      if (temperature < HE_TEMP_MIN_LOGICAL || temperature > HE_TEMP_MAX_LOGICAL)
+          target->quality = QUAL_OUT_OF_RANGE;
+      else
+          target->quality = QUAL_OK;
 }

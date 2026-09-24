@@ -519,13 +519,14 @@ static esp_err_t h_state(httpd_req_t *req)
         p += snprintf(b + p, sizeof(b) - p,
             "%s{\"id\":%d,\"name\":\"%s\",\"active\":%s,\"weight\":%.3f,"
             "\"calib\":%.2f,\"comfort\":%.2f,\"quality\":\"%s\",\"eff\":%.2f,"
-            "\"raw\":%.2f,\"sim\":%s,\"window\":%s,\"last_seen\":%d}",
+            "\"raw\":%.2f,\"sim\":%s,\"window\":%s,\"last_seen\":%d,"
+            "\"loss\":%.0f,\"rx\":%s}",
             i ? "," : "", s->id, ename, s->active ? "true" : "false",
             s->weight, s->calib_offset, s->comfort_offset, sensor_quality_name(s->quality),
             he_isnan(s->last_effective) ? -99.0f : s->last_effective,
             he_isnan(s->last_raw) ? -99.0f : s->last_raw,
             s->simulated ? "true" : "false", s->window_open ? "true" : "false",
-            age_s);
+            age_s, (double)s->loss_pct, s->rx_count > 0 ? "true" : "false");
     }
     if (s_cfg->has_external) {
         sensor_t *e = &s_cfg->sensors[HE_MAX_SENSORS];

@@ -62,8 +62,8 @@ Firmware jest podzielony na moduły w `main/`:
 
 | Plik                  | Moduł (spec)         | Odpowiedzialność                                                  |
 |-----------------------|----------------------|-------------------------------------------------------------------|
-| `sensor_manager.c`    | sensor_manager       | UART z zewn. interfejsem, średnia krocząca 7, temp. efektywna, walidacja, otwarte okno |
-| `lora_receiver.c`     | lora_receiver        | odbiornik LoRa (Ebyte E32), zadanie FreeRTOS, dekodowanie ramek tekstowych z zdalnego węzła DS18x20 |
+| `sensor_manager.c`    | sensor_manager       | UART z zewn. interfejsem, średnia krocząca 8, temp. efektywna, walidacja, otwarte okno, estymacja strat łącza radiowego |
+| `lora_receiver.c`     | lora_receiver        | odbiornik LoRa (Ebyte E32), zadanie FreeRTOS, dekodowanie ramek tekstowych z zdalnego węzła DS18x20, tryb testowy `/api/lora/test` |
 | `simulation_manager.c`| simulation_manager   | symulacja czujników i model cieplny budynku                       |
 | `control_engine.c`    | control_engine       | automat stanów, histereza, profil dobowy, BOOST, wybieg, awaryjny |
 | `heating_output.c`    | heating_output       | linia GPIO, impulsy wybiegu pompy, symulacja wyjścia              |
@@ -120,6 +120,26 @@ odkodowaniu i walidacji pomiaru sterownik odsyła bajt `'X'` jako potwierdzenie
 nadajnika (status 50→40→1): brak ACK obniża moc, a po 49 nieudanych cyklach
 wymusza restart. Aktualizacje pomijane są dla czujników wyłączonych lub
 symulowanych — radio nie może ich nadpisać.
+
+### Test łącza i weryfikacja modułu (`/api/lora/test`)
+
+GET (po logowaniu) wykonuje sondę modułu: pauzuje zadanie `lora_rx`
+(`lora_receiver_test_mode`), mierzy poziom spoczynkowy linii TXD modułu na
+GPIO14 (`rx_idle` = 1 oznacza, że moduł jest zasilony i podłączony), wpisuje
+tryb konfiguracji (M0=M1=1) i wysyła zapytanie parametrów `C1 C1 C1`
+(9600 8N1). Odpowiedź 6 B (`C0 ADDH ADDL SPED CHAN OPTION`) jest dekodowana do
+adresu, bodów, parzystości, przepustowości powietrznej, kanału/częstotliwości
+i mocy. Pola błędu zawierają podpowiedź serwisową (okablowanie/zasilanie).
+Wynik ostatniego uruchomienia (urządzenie): `rx_idle=1`, moduł odpowiedział —
+parametry fabryczne `0000/0x1A`, kanał 0x17 = 433,125 MHz, 9600 8N1, 2,4k, 10 dBm.
+
+### Kadencja i straty
+
+Nominalna kadencja ramek węzła to ~5,5–5,8 s (`HE_LORA_FRAME_PERIOD_MS = 6000`
+— używane do estymacji strat, patrz sekcja A2). Obce ramki LoRa odbierane na
+tym samym kanale są obecnie ignorowane przez parser (wymagany format
+`TT.TTT T<id>&`) — planowane utwardzenie protokołu (MAC + anti-replay) jest
+zaprojektowane, ale jeszcze niewdrożone.
 
 ## Pamięć trwała (spec pkt 9–10)
 
@@ -230,11 +250,19 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   (w jego kolorze linii) pozwalają pokazać/ukryć poszczególne czujniki
   wewnętrzne bez przeładowania strony. Domyślnie wszystkie widoczne.
 - **Health check czujników** — w tabeli czujników kolumna **Health** z kolorową
-  kropką: 🟢 zielona = OK/SIMULATED, 🟡 żółta = WINDOW_OPEN, 🔴 czerwona =
-  TIMEOUT/STALE/OUT_OF_RANGE, ⚫ szara = DISABLED. **Kliknięcie** na czerwoną
-  lub żółtą kropkę rozwija panel ze szczegółowym opisem problemu: przyczyna,
-  czas od ostatniego odczytu (`last_seen`) i skutek dla systemu (np.
-  wykluczenie ze średniej). Dane o wieku odczytu pochodzą z pola `last_seen`
+  kropką: 🟢 zielona = dane napływają bez zakłóceń (straty ≤ 30%), 🟡 żółta =
+  > 30% oczekiwanych ramek radiowych gubionych w oknie pomiarowym, 🔴 czerwona =
+  brak danych (TIMEOUT/OUT_OF_RANGE), ⚫ szara = DISABLED. Dla czujników
+  radiowych (LoRa) priorytetem jest **wskaźnik strat** `loss` (pole w
+  `/api/state`): sterownik porównuje odstępy między 8 ostatnimi przyjęciami
+  z nominalną kadencją (`HE_LORA_FRAME_PERIOD_MS = 6 s`) — duplikaty
+  (odstęp < połowa okresu) nie liczą się jako dane. Dla czujników polled
+  kropka zachowuje stare znaczenie (WINDOW_OPEN = żółta, STALE = czerwona;
+  detekcja STALE dotyczy wyłącznie czujników polled — stabilna temperatura
+  radiowa nie jest błędem). **Kliknięcie** na czerwoną lub żółtą kropkę
+  rozwija panel ze szczegółowym opisem problemu: przyczyna, czas od
+  ostatniego odczytu (`last_seen`) i skutek dla systemu (np. wykluczenie
+  ze średniej). Dane o wieku odczytu pochodzą z pola `last_seen`
   (sekundy od ostatniej aktualizacji), dodanego do `/api/state`.
 - **Wykres zużycia energii (365 dni)** — słupki **minut grzania na dobę**
   (pomarańczowe) z nałożoną linią średniej temperatury systemowej (niebieska).
@@ -375,11 +403,31 @@ uwzględnia wyłącznie czujniki o statusie `OK` lub `SIMULATED`.
 - **Warunek:** temperatura efektywna nie zmieniła się o >0,05 °C przez **ponad
   10 minut** (`stale_detect`) — realny czujnik prawie zawsze lekko dryfuje, więc
   idealna stałość sugeruje zawieszony/uszkodzony czujnik lub interfejs.
+  Detekcja obejmuje **wyłącznie czujniki polled** (wired UART); czujnik zasilany
+  radiowo (LoRa, `rx_count > 0`) jest z niej zwolniony — stabilna temperatura
+  pokoju to nie uszkodzona sonda.
 - **Zakończenie:** automatycznie przy pierwszej znaczącej zmianie odczytu
   (>0,05 °C) — licznik bezruchu jest zerowany, status wraca do `OK`.
 - **Akcje i rezultat:** czujnik przechodzi ze `OK` w `STALE` i **wypada ze
   średniej systemowej**, dopóki nie zacznie znów reagować. Zapobiega
   „przyklejeniu" sterowania do martwej wartości.
+
+### A2. Średnia krocząca i wskaźnik strat łącza radiowego
+
+- **Średnia krocząca 8 odczytów** — każdy czujnik (`sensor_t`) trzyma bufor
+  kołowy **8 ostatnich odczytów** (`HE_MOVING_AVG_WINDOW = 8`). Do aplikacji
+  (średnia systemowa, sterowanie, wykresy) trafia **średnia bufora** powiększona
+  o offsety kalibracji i komfortu (`push_reading()`), co wygładza pojedyncze
+  skoki odczytu.
+- **Estymacja strat radiowych** (`sensor_manager_note_rx`): przy każdym
+  przyjęciu ramki LoRay zapisywany jest czas przyjścia w drugim pierścieniu
+  (8 slotów). Odstęp < `HE_LORA_FRAME_PERIOD_MS/2` (duplikat/retransmisja)
+  tylko odświeża znacznik czasu; normalny odstęp → `expected = span / 6 s`,
+  `missed = expected − interwały`, `loss_pct = 100·missed/(missed+interwały)`.
+  Gdy przez całe okno (8·6 s) nie ma przyjęcia, `loss` forsowane jest do 100%.
+  Czujnik wyłączony zeruje bookkeeping. Wynik dostępny w `/api/state` jako
+  `"loss"` (procent) i `"rx"` (bool: czy czujnik jest zasilany radiem) —
+  panel zamienia to na kolor kropki Health (żółta przy >30%).
 
 #### `QUAL_WINDOW_OPEN` — wykrycie otwartego okna (spec 6.1)
 - **Warunek:** lokalny szybki spadek — `drop > 1,5 °C` względem bazy **oraz**

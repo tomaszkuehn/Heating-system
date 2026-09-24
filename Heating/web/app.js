@@ -202,7 +202,7 @@ function updateSensorCells(sensors) {
     const row = tb.querySelector('tr[data-sid="' + sx.id + '"]');
     if (!row) return;
     const hc = row.querySelector('.hcell');
-    if (hc) hc.innerHTML = healthDot(sx.quality);
+    if (hc) hc.innerHTML = healthDot(sx.quality, sx);
     const q = row.querySelector('.qcell');
     if (q) { q.className = 'qcell q-' + sx.quality; q.textContent = sx.quality + (sx.window ? ' ⊗' : ''); }
     const e = row.querySelector('.ecell');
@@ -219,13 +219,21 @@ function updateSensorCells(sensors) {
   });
 }
 
-function healthDot(q) {
-  const cls = q === 'OK' || q === 'SIMULATED' ? 'hdot-ok' :
-              q === 'WINDOW_OPEN' ? 'hdot-warn' :
-              q === 'DISABLED' ? 'hdot-off' : 'hdot-err';
-  const hasDetail = q !== 'OK' && q !== 'SIMULATED' && q !== 'DISABLED';
-  return `<span class="hdot ${cls}" data-hq="${q}" style="cursor:${hasDetail ? 'pointer' : 'default'}"></span>`;
-}
+  function healthDot(q, sx) {
+    /* Radio-link health: green = data flows with <=30% loss, yellow = more
+     * than 30% of expected frames lost (spec), red = no data. */
+    let cls;
+    if (q === 'DISABLED') cls = 'hdot-off';
+    else if (sx && sx.rx) {
+      cls = (sx.loss || 0) > 30 ? 'hdot-warn' :
+            (q === 'OK' || q === 'SIMULATED') ? 'hdot-ok' : 'hdot-err';
+    } else {
+      cls = q === 'OK' || q === 'SIMULATED' ? 'hdot-ok' :
+            q === 'WINDOW_OPEN' ? 'hdot-warn' : 'hdot-err';
+    }
+    const hasDetail = q !== 'OK' && q !== 'SIMULATED' && q !== 'DISABLED';
+    return `<span class="hdot ${cls}" data-hq="${q}" style="cursor:${hasDetail ? 'pointer' : 'default'}"></span>`;
+  }
 function sensorHealthDetail(sx) {
   const q = sx.quality;
   const age = sx.last_seen !== undefined ? sx.last_seen : '?';
@@ -285,7 +293,7 @@ function renderSensors(sensors) {
       <td><input type="number" step="0.01" value="${sx.weight}"></td>
       <td><input type="number" step="0.1" value="${sx.calib}"></td>
       <td><input type="number" step="0.1" value="${sx.comfort}"></td>
-      <td class="hcell">${healthDot(q)}</td>
+      <td class="hcell">${healthDot(q, sx)}</td>
       <td class="qcell q-${q}">${q}${sx.window ? ' ⊗' : ''}</td>
       <td class="ecell">${fmtT(sx.eff)}</td>
       <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}</td>`;
