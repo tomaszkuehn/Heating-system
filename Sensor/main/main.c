@@ -71,6 +71,19 @@ static int parse_pair(const char *line)
     return (n >= 1 && n <= HE_MAX_SENSORS) ? n : 0;
 }
 
+static void led_init(void)
+{
+    gpio_config_t led = {
+        .pin_bit_mask = 1ULL << HE_GPIO_RESET_LED,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&led);
+    gpio_set_level(HE_GPIO_RESET_LED, 0);
+}
+
 /* ---- Factory reset: hold BOOT (GPIO0) for >=5 s ----
  * Reaching the threshold lights the on-board LED (GPIO2) as a visible
  * "reset armed" hint; the id is erased and the node reboots AFTER the
@@ -110,14 +123,6 @@ static void factory_reset_check(void)
         held++;
         if (held >= HE_RESET_HOLD_SEC && !armed) {
             /* Light the LED: reset armed, keep watching until release. */
-            gpio_config_t led = {
-                .pin_bit_mask = 1ULL << HE_GPIO_RESET_LED,
-                .mode = GPIO_MODE_OUTPUT,
-                .pull_up_en   = GPIO_PULLUP_DISABLE,
-                .pull_down_en = GPIO_PULLDOWN_DISABLE,
-                .intr_type    = GPIO_INTR_DISABLE,
-            };
-            gpio_config(&led);
             gpio_set_level(HE_GPIO_RESET_LED, 1);
             ESP_LOGW(TAG, "reset armed (LED on) — release BOOT to apply");
             armed = true;
@@ -166,6 +171,10 @@ static void pairing_loop(void)
     char line[HE_LORA_LINE_MAX];
     for (;;) {
         esp_task_wdt_reset();
+
+        /* Factory reset works while unpaired too: BOOT held >=5 s lights the
+         * LED, release erases the id (no-op) and reboots. */
+        factory_reset_check();
 
         if (g_probe_count == 0)
             g_probe_count = ds18b20_enumerate(g_probes, HE_MAX_SENSORS);
@@ -356,6 +365,15 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
     node_id_load();
+
+    /* LED self-test: blink 3x so the pin/level can be confirmed visually. */
+    led_init();
+    for (int i = 0; i < 3; i++) {
+        gpio_set_level(HE_GPIO_RESET_LED, 1);
+        vTaskDelay(pdMS_TO_TICKS(150));
+        gpio_set_level(HE_GPIO_RESET_LED, 0);
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
 
     /* Factory reset: BOOT (GPIO0) held for >5 s lights the LED, then erases
      * the id on release and reboots unpaired. */
