@@ -217,6 +217,11 @@ static void lora_rx_task(void *arg)
 
 void lora_receiver_init(void)
 {
+    /* Age all tracked announcements on start so none are treated as
+     * fresh until the node actually announces itself. */
+    for (int i = 0; i <= HE_MAX_SENSORS; i++)
+        s_pair_nodes[i].age_s = -1;
+
     /* Mode-control pins: both LOW for normal Tx/Rx operation. */
     gpio_config_t io = {
         .pin_bit_mask = (1ULL << HE_GPIO_LORA_AUX) | (1ULL << HE_GPIO_LORA_TXRX),

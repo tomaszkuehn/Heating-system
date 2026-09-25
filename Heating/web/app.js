@@ -410,8 +410,6 @@ async function pollPair() {
   }
   // keep old free[] for backward compat, plus nodes[]
 }
-  }
-}
 
 function openPairModal() {
   const m = $('pairModal');
