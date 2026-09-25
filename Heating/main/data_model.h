@@ -80,10 +80,13 @@ typedef enum {
     SIM_SRC_VIRTUAL
 } sim_source_t;
 
-/* ---- Single sensor descriptor + runtime state ---- */
+/* ---- Single sensor descriptor + runtime state ----
+ * NVS layout: radio_id is TAIL-appended for upgrade safety — inserting it
+ * before `name` would shift every v1-blob field and corrupt names/offsets
+ * on upgrade. A v1 blob (short read) zero-fills the tail; repair_config()
+ * then migrates radio_id = id when cfg_ver < HE_CFG_VER_RADIO_ID. */
 typedef struct {
     uint8_t            id;                 /* logical id 1..6 (0 = external)   */
-    uint8_t            radio_id;           /* paired LoRa node id (0 = none/wired) */
     char               name[HE_NAME_LEN];
     bool               active;             /* enabled by user                  */
     bool               is_external;        /* outdoor sensor                   */
@@ -115,6 +118,7 @@ typedef struct {
     int                rx_count;                     /* valid slots in ring   */
     int                rx_head;                      /* next write index      */
     float              loss_pct;          /* 0..100+, recomputed on arrival   */
+    uint8_t            radio_id;          /* paired LoRa node id (0 = none)   */
 } sensor_t;
 
 /* ---- Daily profile (spec section 5.1) ---- */

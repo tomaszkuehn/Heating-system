@@ -138,8 +138,15 @@ static void repair_config(system_config_t *c)
     }
     /* Config layout v1 -> v2: sensor_t gained radio_id. A v1 blob zero-fills
      * it; preserve the old 1:1 behaviour by defaulting radio_id = logical id.
-     * New pairings write explicit radio ids from then on. */
-    if (c->cfg_ver < HE_CFG_VER_RADIO_ID) {
+     * New pairings write explicit radio ids from then on.
+     * Fallback: the one intermediate build (cfg_ver==2) had radio_id mid-
+     * struct, which corrupted the blob layout; its save left every sensor
+     * with radio_id==0. Treat "all radio ids zero" the same way so pairing
+     * works again without an NVS erase. */
+    bool any_radio = false;
+    for (int i = 0; i < c->sensor_count; i++)
+        if (c->sensors[i].radio_id != 0) { any_radio = true; break; }
+    if (c->cfg_ver < HE_CFG_VER_RADIO_ID || !any_radio) {
         for (int i = 0; i < c->sensor_count; i++)
             if (c->sensors[i].radio_id == 0) c->sensors[i].radio_id = c->sensors[i].id;
         c->cfg_ver = HE_CFG_VER_RADIO_ID;
@@ -147,6 +154,29 @@ static void repair_config(system_config_t *c)
     /* Sanitise: radio ids must stay within 0..HE_MAX_SENSORS. */
     for (int i = 0; i <= HE_MAX_SENSORS; i++)
         if (c->sensors[i].radio_id > HE_MAX_SENSORS) c->sensors[i].radio_id = 0;
+    /* Corrupted-blob recovery: the intermediate build (radio_id mid-struct)
+     * persisted a shifted layout — ids like 106/105/32 are impossible. When
+     * any internal sensor id is out of range, re-seed the sensor table with
+     * defaults (names are unrecoverable; weights are re-normalised) and map
+     * radio_id = id so existing nodes keep working 1:1. */
+    for (int i = 0; i < c->sensor_count; i++) {
+        if (c->sensors[i].id < 1 || c->sensors[i].id > HE_MAX_SENSORS) {
+            ESP_LOGW(TAG, "corrupt sensor id %u @%d — re-seeding table",
+                     (unsigned)c->sensors[i].id, i);
+            c->sensor_count = 3;
+            const char *dn[3] = { "Salon", "Kuchnia", "Sypialnia" };
+            for (int k = 0; k < 3; k++) {
+                memset(&c->sensors[k], 0, sizeof(sensor_t));
+                c->sensors[k].id = (uint8_t)(k + 1);
+                strncpy(c->sensors[k].name, dn[k], HE_NAME_LEN - 1);
+                c->sensors[k].active = true;
+                c->sensors[k].weight = 1.0f / 3.0f;
+                c->sensors[k].sim_src = SIM_SRC_REAL;
+                c->sensors[k].radio_id = (uint8_t)(k + 1);
+            }
+            break;
+        }
+    }
 }
 
 static void control_task(void *arg)
