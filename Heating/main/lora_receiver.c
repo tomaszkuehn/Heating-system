@@ -54,6 +54,66 @@ void lora_repair_assign(int old, int id) { pair_broadcast("REPAIR %d %d&", old, 
  * persisted radio id and reboots into the factory-default unpaired mode. */
 void lora_unpair_reset(void) { pair_broadcast("RESET&", 0, 0); }
 
+/* ---- Unpair verification (async) ----
+ * After a RESET& broadcast the node should reboot into unpaired mode and
+ * announce itself with "TT.TTT T00&". The web layer arms a verification
+ * window of HE_UNPAIR_VERIFY_CYCLES node cycles (~3 × 6 s); the scanner
+ * below watches the T00 arrival. Results surface through
+ * lora_unpair_status(): PENDING -> (CONFIRMED | FAILED | TIMEOUT). */
+#define HE_UNPAIR_VERIFY_CYCLES 3
+
+typedef enum {
+    UNPAIR_IDLE = 0,
+    UNPAIR_PENDING,     /* broadcast done, waiting for the node's T00 */
+    UNPAIR_CONFIRMED,   /* node announced T00 after the reset         */
+    UNPAIR_FAILED,      /* window elapsed, node kept announcing its id */
+} unpair_state_t;
+
+typedef struct {
+    unpair_state_t state;
+    int      radio_id;        /* id we asked to erase */
+    int64_t  deadline_us;     /* verification window end */
+} unpair_verify_t;
+
+static unpair_verify_t s_unpair = { .state = UNPAIR_IDLE };
+
+/* Called from process_line() on every fresh announcement. */
+static void unpair_verify_note(int id)
+{
+    if (s_unpair.state != UNPAIR_PENDING) return;
+    if (esp_timer_get_time() > s_unpair.deadline_us) {
+        s_unpair.state = UNPAIR_FAILED;
+        return;
+    }
+    if (id == 0) {
+        /* The node we reset now announces unpaired -> factory default kept. */
+        if (s_pair_nodes[0].age_s == 0)
+            s_unpair.state = UNPAIR_CONFIRMED;
+    } else if (id == s_unpair.radio_id && s_pair_nodes[id].age_s == 0) {
+        /* Still announcing its old id within the window -> keep waiting; the
+         * timeout will fire if it never stops. */
+    }
+}
+
+void lora_unpair_verify_start(int radio_id, int window_s)
+{
+    s_unpair.state       = UNPAIR_PENDING;
+    s_unpair.radio_id    = radio_id;
+    s_unpair.deadline_us = esp_timer_get_time() + (int64_t)window_s * 1000000;
+}
+
+/* Poll verification progress. Returns: 0 idle, 1 pending, 2 confirmed,
+ * 3 failed. Called by the web layer to report the outcome and offer a
+ * force-delete fallback. */
+int lora_unpair_verify_state(void)
+{
+    if (s_unpair.state == UNPAIR_PENDING &&
+        esp_timer_get_time() > s_unpair.deadline_us)
+        s_unpair.state = UNPAIR_FAILED;
+    return (int)s_unpair.state;
+}
+void lora_unpair_verify_clear(void) { s_unpair.state = UNPAIR_IDLE; }
+
 static void pair_broadcast(const char *fmt, int a, int b)
 {
     char cmd[24];
@@ -135,6 +195,7 @@ static void process_line(const char *line)
         s_pair_nodes[0].id = 0;
         s_pair_nodes[0].temp = temp;
         s_pair_nodes[0].age_s = 0;
+        unpair_verify_note(0);
         ESP_LOGI(TAG, "pairing request: T00 = %.2f C", temp);
         return;
     }
@@ -148,6 +209,7 @@ static void process_line(const char *line)
     s_pair_nodes[id].id = id;
     s_pair_nodes[id].temp = temp;
     s_pair_nodes[id].age_s = 0;
+    unpair_verify_note(id);
 
     if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
         ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);

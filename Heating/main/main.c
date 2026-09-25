@@ -136,6 +136,17 @@ static void repair_config(system_config_t *c)
         c->notify_ev_restart = true;
         c->notify_ev_ver = 1;
     }
+    /* Config layout v1 -> v2: sensor_t gained radio_id. A v1 blob zero-fills
+     * it; preserve the old 1:1 behaviour by defaulting radio_id = logical id.
+     * New pairings write explicit radio ids from then on. */
+    if (c->cfg_ver < HE_CFG_VER_RADIO_ID) {
+        for (int i = 0; i < c->sensor_count; i++)
+            if (c->sensors[i].radio_id == 0) c->sensors[i].radio_id = c->sensors[i].id;
+        c->cfg_ver = HE_CFG_VER_RADIO_ID;
+    }
+    /* Sanitise: radio ids must stay within 0..HE_MAX_SENSORS. */
+    for (int i = 0; i <= HE_MAX_SENSORS; i++)
+        if (c->sensors[i].radio_id > HE_MAX_SENSORS) c->sensors[i].radio_id = 0;
 }
 
 static void control_task(void *arg)

@@ -25,7 +25,12 @@
 extern "C" {
 #endif
 
-/* ---- Master configuration held in NVS ---- */
+/* ---- Master configuration held in NVS ----
+ * NVS layout version bump 2: sensor_t gained radio_id (LoRa pairing decoupled
+ * from the logical sensor id). A short-read blob from v1 zero-fills the tail
+ * fields; repair_config() then defaults radio_id = id for pre-existing
+ * sensors (preserves the old 1:1 behaviour). */
+#define HE_CFG_VER_RADIO_ID   2
 typedef struct {
     sensor_t            sensors[HE_MAX_SENSORS + 1]; /* idx 0..HE_MAX_SENSORS-1 = internal; idx HE_MAX_SENSORS = external */
     int                 sensor_count;                /* internal count 1..6 */
@@ -76,6 +81,9 @@ typedef struct {
      * these, and repair_config() restores the defaults. Do NOT reorder above. */
     char                panel_user[16];            /* login name (default "admin") */
     char                panel_pass[32];            /* panel password (default HE_DEFAULT_PANEL_PASS) */
+    /* ---- Config-layout version: v1 blobs (pre radio_id) short-read here.
+     * repair_config() uses it to default radio_id = id on upgrade. ---- */
+    uint8_t             cfg_ver;                   /* HE_CFG_VER_RADIO_ID = 2 */
 } system_config_t;
 
 /* One minute sample record (all active sensors + system + external). */

@@ -410,16 +410,17 @@ void sensor_manager_restore(int id)
 
 void sensor_manager_lora_update(int id, float temperature)
 {
-    /* Route by id exactly like the wired frame parser: 1..HE_MAX_SENSORS
-     * are internal probes. A disabled or simulated sensor is ignored so a
-     * radio frame can't revive or override a sensor the user turned off or
-     * replaced with a simulation source. */
+    /* Route by the paired radio id (radio_id), NOT the logical sensor id:
+     * a sensor's LoRa node can be paired to any free radio id independently
+     * of where it sits in the sensor table. A disabled or simulated sensor
+     * is ignored so a radio frame can't revive or override a sensor the
+     * user turned off or replaced with a simulation source. */
     if (id < 1 || id > HE_MAX_SENSORS) return;
     if (isnan(temperature)) return;
 
     sensor_t *target = NULL;
     for (int k = 0; k < s_count; k++) {
-        if (s_sensors[k].id == id) { target = &s_sensors[k]; break; }
+        if (s_sensors[k].radio_id == id) { target = &s_sensors[k]; break; }
     }
     if (!target) return;
     if (!target->active || target->simulated) return;

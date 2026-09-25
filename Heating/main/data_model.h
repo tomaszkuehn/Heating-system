@@ -83,6 +83,7 @@ typedef enum {
 /* ---- Single sensor descriptor + runtime state ---- */
 typedef struct {
     uint8_t            id;                 /* logical id 1..6 (0 = external)   */
+    uint8_t            radio_id;           /* paired LoRa node id (0 = none/wired) */
     char               name[HE_NAME_LEN];
     bool               active;             /* enabled by user                  */
     bool               is_external;        /* outdoor sensor                   */

@@ -285,8 +285,9 @@ function renderSensors(sensors) {
     const tr = document.createElement('tr');
     tr.dataset.sid = sx.id;
     const q = sx.quality;
+    const radioTag = sx.radio_id ? ` <span style="color:var(--accent);font-size:11px" title="ID węzła LoRa">📡${sx.radio_id}</span>` : '';
     tr.innerHTML = `
-      <td>${sx.id}${sx.external ? ' ★' : ''}${sx.sim ? ' SIM' : ''}</td>
+      <td>${sx.id}${radioTag}${sx.external ? ' ★' : ''}${sx.sim ? ' SIM' : ''}</td>
       <td><input class="name" value="${sx.name}"></td>
       <td><input type="checkbox" ${sx.active ? 'checked' : ''}></td>
       <td><input type="number" step="0.01" value="${sx.weight}"></td>
@@ -295,7 +296,7 @@ function renderSensors(sensors) {
       <td class="hcell">${healthDot(q, sx)}</td>
       <td class="qcell q-${q}">${q}${sx.window ? ' ⊗' : ''}</td>
       <td class="ecell">${fmtT(sx.eff)}</td>
-      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.rx ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-repair="${sx.id}" title="Zmień ID LoRa tego węzła">ID…</button><button class="btn btn-danger" style="padding:4px 8px;margin-left:4px" data-unpair="${sx.id}" title="Usuń czujkę LoRa (węzeł wróci do ustawień fabrycznych)">Usuń</button>` : ''}</td>`;
+      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.radio_id ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-repair="${sx.radio_id}" title="Zmień ID LoRa tego węzła">ID…</button><button class="btn btn-danger" style="padding:4px 8px;margin-left:4px" data-unpair="${sx.radio_id}" title="Usuń czujkę LoRa (węzeł wróci do ustawień fabrycznych)">Usuń</button>` : ''}</td>`;
     const inputs = tr.querySelectorAll('input');
     tr.querySelector('button[data-id]').onclick = () => {
       const body = { name: inputs[0].value, active: inputs[1].checked,
@@ -306,7 +307,7 @@ function renderSensors(sensors) {
     const rb = tr.querySelector('button[data-restore]');
     if (rb) rb.onclick = () => post('/api/sensor/restore?id=' + sx.id, '').then(() => refresh());
     const rp = tr.querySelector('button[data-repair]');
-    if (rp) rp.onclick = () => openRepairModal(sx.id);
+    if (rp) rp.onclick = () => openRepairModal(sx.radio_id);
     /* Delete LoRa sensor: extra inline confirmation before the call. */
     const up = tr.querySelector('button[data-unpair]');
     if (up) up.onclick = () => {
@@ -317,10 +318,11 @@ function renderSensors(sensors) {
         <button class="btn" style="padding:4px 10px;font-size:12px;background:#333">Nie</button>`;
       const [yes, no] = c.querySelectorAll('button');
       yes.onclick = async () => {
-        const r = await fetch('/api/lora/unpair?id=' + sx.id, { method: 'POST' });
-        if (r.ok) refresh(); else c.remove();
+        const r = await fetch('/api/lora/unpair?id=' + sx.radio_id, { method: 'POST' });
+        if (r.ok) { c.remove(); startUnpairWatch(sx.radio_id); }
+        else c.remove();
       };
-      c.querySelector('button:not(.btn-danger)').onclick = () => c.remove();
+      no.onclick = () => c.remove();
       up.after(c);
     };
     /* Click on health dot for problem sensors shows detail panel. */
@@ -430,7 +432,10 @@ async function pollPair() {
 }
 
 /* Re-render the currently open modal's list from the latest pairState
- * without resetting scroll position or closing it (live background scan). */
+ * without resetting scroll position or closing it (live background scan).
+ * ALL detected devices are selectable: an unpaired node (T00) gets a fresh
+ * id assigned over the air; an already-paired node is adopted into the
+ * system with its EXISTING radio id (node unchanged). */
 function refreshPairModalList() {
   if ($('pairModal').classList.contains('hidden')) return;
   const nodes = (pairState && pairState.nodes) ? pairState.nodes : [];
@@ -443,20 +448,40 @@ function refreshPairModalList() {
         const id = nd.id;
         const temp = nd.temp > -50 ? nd.temp.toFixed(1) + ' °C' : '';
         const age = nd.age >= 0 ? nd.age + ' s temu' : '';
-        const assigned = free.indexOf(id) < 0;
+        const unpaired = id === 0;                 /* T00: id gets assigned */
+        const adopted = !unpaired && free.indexOf(id) < 0;  /* paired, no slot */
+        const kind = unpaired ? 'niesparowany — przydziel ID'
+                   : adopted ? 'sparowany — dodaj z ID ' + id
+                   : 'sparowany (aktywny czujnik)';
+        const selectable = unpaired || adopted;
         const checked = (prevSelVal !== null && +prevSelVal === id) ? 'checked' : '';
-        return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:${assigned ? 'not-allowed' : 'pointer'};opacity:${assigned ? 0.5 : 1}">
-          <input type="radio" name="pairIdOpt" value="${id}" ${assigned ? 'disabled' : ''} ${checked}>
-          <span style="font-weight:700">ID ${id}</span>
+        return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:${selectable ? 'pointer' : 'not-allowed'};opacity:${selectable ? 1 : 0.5}">
+          <input type="radio" name="pairIdOpt" value="${id}" ${selectable ? '' : 'disabled'} ${checked}>
+          <span style="font-weight:700">${unpaired ? 'Nowy węzeł (T00)' : 'ID ' + id}</span>
           <span style="color:var(--muted);font-size:12px">${temp} · ${age}</span>
-          ${assigned ? '<span style="color:var(--warn);font-size:11px">zajęty</span>' : ''}
+          <span style="color:var(--muted);font-size:11px">${kind}</span>
         </label>`;
       }).join('')
     : '<div style="color:var(--muted);padding:8px">Skanowanie… Brak wykrytych urządzeń LoRa. Włącz nowy węzeł — okno odświeża się automatycznie.</div>';
+  const selectable = nodes.some(nd => nd.id === 0 || free.indexOf(nd.id) >= 0);
   $('pairModalReq').textContent = nodes.length
-    ? `Wykryto ${nodes.length} ${nodes.length === 1 ? 'urządzenie' : 'urządzeń'} LoRa. Wybierz wolne ID:`
+    ? `Wykryto ${nodes.length} ${nodes.length === 1 ? 'urządzenie' : 'urządzeń'} LoRa. Nowy węzeł (T00) dostanie wolne ID; sparowany węzeł zostanie dodany z obecnym ID.`
     : 'Skanowanie radia w tle — włącz nowy węzeł i poczekaj na ogłoszenie (T00).';
-  $('btnPairAssign').disabled = !free.length;
+  $('btnPairAssign').disabled = !selectable;
+  /* Free-id dropdown for assigning a fresh id to an unpaired (T00) node. */
+  const hasT00 = nodes.some(nd => nd.id === 0);
+  const reqEl = $('pairModalReq');
+  const prevPick = $('pairNewIdSel') ? $('pairNewIdSel').value : null;
+  if (hasT00 && free.length) {
+    if (!$('pairNewIdSel')) {
+      const selp = document.createElement('span');
+      selp.innerHTML = ` <label style="font-size:12px">ID dla T00: <select id="pairNewIdSel" style="padding:2px 6px">${free.map(f => `<option value="${f}" ${prevPick && +prevPick === f ? 'selected' : ''}>${f}</option>`).join('')}</select></label>`;
+      reqEl.appendChild(selp);
+    }
+  } else {
+    const selp = $('pairNewIdSel');
+    if (selp) selp.closest('label').remove();
+  }
 }
 
 function startPairModalTimer() {
@@ -478,7 +503,15 @@ function openPairModal() {
   $('btnPairAssign').onclick = async () => {
     const sel = document.querySelector('input[name="pairIdOpt"]:checked');
     if (!sel) return;
-    const r = await fetch('/api/lora/pair?id=' + sel.value, { method: 'POST' });
+    const dev = +sel.value;   /* 0 = unpaired node, >0 = paired node's id */
+    let rid = dev;
+    if (dev === 0) {
+      /* Unpaired node: pick a free radio id from the small dropdown. */
+      const pick = document.querySelector('#pairNewIdSel');
+      if (!pick || !pick.value) return;
+      rid = +pick.value;
+    }
+    const r = await fetch('/api/lora/pair?id=' + rid, { method: 'POST' });
     if (r.ok) { closePairModal(); await refresh(); }
   };
   m.classList.remove('hidden');
@@ -486,6 +519,43 @@ function openPairModal() {
 }
 
 function closePairModal() { stopPairModalTimer(); $('pairModal').classList.add('hidden'); }
+
+/* ---- Background unpair verification watch ----
+ * Polls /api/lora/unpair/status while a delete+reset is in flight. On
+ * "confirmed" the factory reset succeeded; on "failed" the user is told
+ * the node kept its id and may force-delete without resetting. */
+let unpairWatchTimer = null;
+function startUnpairWatch(radioId) {
+  stopUnpairWatch();
+  const banner = $('pairBanner'), info = $('pairInfo');
+  info.textContent = `Usuwanie czujki (radio ${radioId}): czekam na potwierdzenie resetu węzła…`;
+  banner.classList.remove('hidden');
+  unpairWatchTimer = setInterval(async () => {
+    const st = await api('/api/lora/unpair/status');
+    if (!st) return;
+    if (st.state === 'pending') return;                      /* keep waiting */
+    stopUnpairWatch();
+    if (st.state === 'confirmed') {
+      info.textContent = `Czujka radio ${radioId} usunięta — węzeł potwierdził powrót do ustawień fabrycznych.`;
+    } else {
+      info.textContent = `Czujka radio ${radioId} usunięta z systemu, ale reset węzła NIE został potwierdzony (węzeł poza zasięgiem lub wyłączony). Węzeł zachował swoje ID.`;
+      /* Offer the force-delete fallback. */
+      const btn = document.createElement('button');
+      btn.className = 'btn'; btn.style.cssText = 'padding:4px 12px;margin-left:10px';
+      btn.textContent = 'Usuń czujkę bez resetu';
+      btn.onclick = async () => {
+        await fetch('/api/lora/unpair/force?id=' + radioId, { method: 'POST' });
+        btn.remove(); refresh();
+      };
+      banner.appendChild(btn);
+      setTimeout(() => btn.remove(), 60000);
+    }
+    setTimeout(() => { if (!unpairWatchTimer) banner.classList.add('hidden'); }, 15000);
+  }, 2000);
+}
+function stopUnpairWatch() {
+  if (unpairWatchTimer) { clearInterval(unpairWatchTimer); unpairWatchTimer = null; }
+}
 
 $('btnAddSensor').onclick = openPairModal;
 $('btnAddSensorBanner').onclick = openPairModal;
@@ -507,14 +577,14 @@ function renderRepairList() {
         const canChange = free.indexOf(id) >= 0 && id !== fromId;
         return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:${canChange ? 'pointer' : 'not-allowed'};opacity:${canChange ? 1 : 0.5}">
           <input type="radio" name="pairIdOpt" value="${id}" ${canChange ? '' : 'disabled'}>
-          <span style="font-weight:700">ID ${id}</span>
+          <span style="font-weight:700">${id === 0 ? 'Nowy węzeł (T00)' : 'ID ' + id}</span>
           <span style="color:var(--muted);font-size:12px">${nd.temp > -50 ? nd.temp.toFixed(1) + ' °C' : ''} · ${nd.age >= 0 ? nd.age + ' s temu' : ''}</span>
           ${id === fromId ? '<span style="color:var(--accent);font-size:11px">bieżący</span>' : ''}
-          ${!canChange && id !== fromId ? '<span style="color:var(--warn);font-size:11px">zajęty</span>' : ''}
+          ${!canChange && id !== fromId && id !== 0 ? '<span style="color:var(--warn);font-size:11px">zajęty</span>' : ''}
         </label>`;
       }).join('')
     : '<div style="color:var(--muted);padding:8px">Skanowanie… Brak wykrytych urządzeń LoRa. Okno odświeża się automatycznie.</div>';
-  $('pairModalReq').textContent = `Zmiana ID LoRa czujnika #${fromId}. Wybierz nowy ID (wolny slot):`;
+  $('pairModalReq').textContent = `Zmiana ID LoRa węzła #${fromId}. Wybierz nowy ID (wolny slot):`;
   $('btnPairAssign').disabled = !free.length;
 }
 
@@ -522,18 +592,12 @@ function openRepairModal(fromId) {
   pairModalMode = 'repair';
   pairModalFromId = fromId;
   /* Swap the live-refresher into repair rendering while this flow is open. */
-  const repairTick = () => {
-    if (!$('pairModal').classList.contains('hidden')) renderRepairList();
-  };
-  startPairModalTimer();
-  const oldTimer = pairModalTimer;
   stopPairModalTimer();
   pairModalTimer = setInterval(async () => {
-    if ($('pairModal').classList.contains('hidden')) return stopPairModalTimer();
+    if ($('pairModal').classList.contains('hidden')) { stopPairModalTimer(); return; }
     await pollPair();
-    repairTick();
+    renderRepairList();
   }, 2000);
-  void oldTimer;
   renderRepairList();
   $('btnPairAssign').onclick = async () => {
     const sel = document.querySelector('input[name="pairIdOpt"]:checked');
