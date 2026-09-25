@@ -1068,20 +1068,33 @@ static esp_err_t h_log_clear(httpd_req_t *req)
     return send_text(req, "ok", 200);
 }
 
-/* ---- /api/lora/pair (GET) — status of unpaired-node announcements ----
- * The UI polls this to detect a node waiting for an id (frame "T00").
- * Response: request=true when a fresh announcement exists, temp/age; and
- * free[] = radio ids not currently sourced by any sensor (candidates). */
+/* ---- /api/lora/pair (GET) — list of all detected LoRa devices ----
+ * The UI polls this to enumerate available nodes and their radio ids.
+ * Response: nodes[] = array of {id,temp,age} for every device whose
+ * last announcement is fresh (age_s >= 0 && <= 30 s); and
+ * free[] = radio ids not currently sourced by any active sensor
+ * (pairing candidates). */
 static esp_err_t h_lora_pair_get(httpd_req_t *req)
 {
-    float temp; int age_s;
-    lora_pair_request(&temp, &age_s);
-    char b[320]; int p = 0;
-    bool fresh = (age_s >= 0 && age_s <= 30);
-    p += snprintf(b, sizeof(b),
-        "{\"request\":%s,\"temp\":%.2f,\"age\":%d,\"free\":[",
-        fresh ? "true" : "false", (double)(fresh ? temp : -99.0f),
-        fresh ? age_s : -1);
+    lora_node_desc_t nodes[HE_MAX_SENSORS + 1];
+    int count = 0;
+    lora_pair_request(nodes, &count, HE_MAX_SENSORS + 1);
+    char b[512]; int p = 0;
+
+    /* Build nodes[] array. */
+    p += snprintf(b + p, sizeof(b) - p, "{\"nodes\":[");
+    bool any = false;
+    for (int i = 0; i < count; i++) {
+        bool fresh = (nodes[i].age_s >= 0 && nodes[i].age_s <= 30);
+        if (!fresh) continue;
+        p += snprintf(b + p, sizeof(b) - p, "%s{\"id\":%d,\"temp\":%.2f,\"age\":%d}",
+                      any ? "," : "", nodes[i].id,
+                      (double)(he_isnan(nodes[i].temp) ? -99.0f : nodes[i].temp),
+                      nodes[i].age_s);
+        any = true;
+    }
+    p += snprintf(b + p, sizeof(b) - p, "],\"free\":[");
+
     CFG_LOCK();
     int first = 1;
     for (int i = 1; i <= HE_MAX_SENSORS; i++) {

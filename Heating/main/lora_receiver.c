@@ -20,25 +20,27 @@ static const char *TAG = "lora";
  * the module's config response). */
 static volatile bool s_test_active = false;
 
-/* ---- Pairing (unpaired node announcement) ----
- * An unpaired node announces itself with frames "TT.TTT T00&". The latest
- * announcement (temperature + age) is stored here; the web UI reads it via
- * lora_pair_request() and assigns an id with lora_pair_assign(). */
+/* ---- Pairing scanner ----
+ * Nodes announce themselves with "TT.TTT T<n>&" where n = 0 (unpaired)
+ * or n = radio id (NVS-persisted). Every announcement is stored
+ * indexed by radio id so the pairing UI can show ALL detected devices
+ * with their LoRa ids (not only the latest "T00"). */
 #define HE_PAIR_REQ_TTL_MS  30000   /* announcement older than this is stale */
 
-static int64_t s_pair_req_us = 0;
-static float   s_pair_req_temp = 0.0f;
+static lora_node_desc_t s_pair_nodes[HE_MAX_SENSORS + 1];  /* [id] */
 
 static void pair_broadcast(const char *fmt, int a, int b);
 
-void lora_pair_request(float *temp, int *age_s)
+void lora_pair_request(lora_node_desc_t *nodes, int *count, int max)
 {
-    if (temp) *temp = s_pair_req_temp;
-    if (age_s) {
-        *age_s = s_pair_req_us
-                     ? (int)((esp_timer_get_time() - s_pair_req_us) / 1000000)
-                     : -1;
+    if (max > HE_MAX_SENSORS + 1) max = HE_MAX_SENSORS + 1;
+    int n = 0;
+    for (int i = 0; i <= HE_MAX_SENSORS && n < max; i++) {
+        if (s_pair_nodes[i].age_s >= 0) {
+            nodes[n++] = s_pair_nodes[i];
+        }
     }
+    *count = n;
 }
 
 /* Broadcast a pairing command. mode PAIR (new node, id 1..6) sends
@@ -62,7 +64,6 @@ static void pair_broadcast(const char *fmt, int a, int b)
     }
     ESP_LOGI(TAG, "pairing broadcast sent: %s", cmd);
     /* The request is consumed: UI should not offer a stale announcement. */
-    s_pair_req_us = 0;
 }
 
 void lora_receiver_test_mode(bool on)
@@ -126,11 +127,23 @@ static void process_line(const char *line)
             ESP_LOGW(TAG, "sensor reports error (ERR T&)");
             return;
         }
-        s_pair_req_temp = temp;
-        s_pair_req_us = esp_timer_get_time();
+        /* Record the announcement indexed by radio id (0 = unpaired). */
+        s_pair_nodes[0].id = 0;
+        s_pair_nodes[0].temp = temp;
+        s_pair_nodes[0].age_s = 0;
         ESP_LOGI(TAG, "pairing request: T00 = %.2f C", temp);
         return;
     }
+
+    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
+        ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
+        return;
+    }
+
+    /* Track paired-node announcements for the pairing scanner too */
+    s_pair_nodes[id].id = id;
+    s_pair_nodes[id].temp = temp;
+    s_pair_nodes[id].age_s = 0;
 
     if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
         ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
@@ -155,6 +168,9 @@ static void lora_rx_task(void *arg)
 {
     char line[HE_LORA_LINE_MAX + 1];
     int  line_len = 0;
+
+    /* Age all tracked announcements every second (seconds granularity). */
+    int64_t age_tick_us = esp_timer_get_time();
 
     for (;;) {
         if (s_test_active) {
@@ -184,6 +200,17 @@ static void lora_rx_task(void *arg)
             line[line_len] = '\0';
             process_line(line);
             line_len = 0;
+        }
+
+        /* Age stale announcements once per second. */
+        if (esp_timer_get_time() - age_tick_us >= 1000000) {
+            age_tick_us = esp_timer_get_time();
+            for (int i = 0; i <= HE_MAX_SENSORS; i++) {
+                if (s_pair_nodes[i].age_s >= 0) {
+                    if (++s_pair_nodes[i].age_s > HE_PAIR_REQ_TTL_MS / 1000)
+                        s_pair_nodes[i].age_s = -1;
+                }
+            }
         }
     }
 }

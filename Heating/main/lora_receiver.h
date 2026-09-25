@@ -29,10 +29,21 @@ void lora_receiver_init(void);
  * can exclusively own the UART during an AT-query exchange. */
 void lora_receiver_test_mode(bool on);
 
-/* Latest unpaired-node announcement ("TT.TTT T00&"). temp = announced
- * temperature (degC), age_s = seconds since the announcement (or -1 when
- * there is none / it was consumed). */
-void lora_pair_request(float *temp, int *age_s);
+/* One detected LoRa device (unpaired "T00" announcement or a paired
+ * node "TT.TTT T<n>&"). The UI shows all of them when pairing so the
+ * user can pick the device by its radio id. */
+typedef struct {
+    int   id;       /* radio id 0..HE_MAX_SENSORS (0 = unpaired) */
+    float temp;     /* last announced temperature (degC), NaN when stale */
+    int   age_s;    /* seconds since this announcement (-1 = never) */
+} lora_node_desc_t;
+
+/* Maximum nodes tracked for the pairing scanner (same as HE_MAX_SENSORS). */
+#define HE_PAIR_DESC_MAX  HE_MAX_SENSORS
+
+/* Latest announcements indexed by radio id. The UI polls
+ * lora_pair_request() to enumerate available devices. */
+void lora_pair_request(lora_node_desc_t *nodes, int *count, int max);
 
 /* Broadcast the pairing command "PAIR <id>&" to assign an id to the
  * unpaired node (id 1..HE_MAX_SENSORS). */

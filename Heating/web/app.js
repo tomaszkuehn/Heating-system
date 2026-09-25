@@ -399,30 +399,42 @@ async function pollPair() {
   if (!p) return;
   pairState = p;
   const banner = $('pairBanner');
-  if (p.request) {
-    $('pairInfo').textContent = (p.temp > -50 ? p.temp.toFixed(1) + ' °C, ' : '')
-      + 'ogłoszenie ' + p.age + ' s temu';
+  const nd = (p.nodes && p.nodes.length) ? p.nodes[0] : null;
+  if (nd) {
+    $('pairInfo').textContent = (nd.temp > -50 ? nd.temp.toFixed(1) + ' °C, ' : '')
+      + 'ogłoszenie ' + nd.age + ' s temu'
+      + (nd.id !== 0 ? ` (LoRa ID ${nd.id})` : ' (nieskonfigurowany węzeł)');
     banner.classList.remove('hidden');
   } else {
     banner.classList.add('hidden');
+  }
+  // keep old free[] for backward compat, plus nodes[]
+}
   }
 }
 
 function openPairModal() {
   const m = $('pairModal');
+  const nodes = (pairState && pairState.nodes) ? pairState.nodes : [];
   const free = (pairState && pairState.free) ? pairState.free : [];
-  const req = pairState && pairState.request;
-  $('pairModalList').innerHTML = free.length
-    ? free.map(n => `
-      <label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:pointer">
-        <input type="radio" name="pairIdOpt" value="${n}">
-        <span style="font-weight:700">ID ${n}</span>
-        <span style="color:var(--muted);font-size:12px">wolne w bazie</span>
-      </label>`).join('')
-    : '<div style="color:var(--muted);padding:8px">Brak wolnych ID (1–6 zajęte)</div>';
-  $('pairModalReq').textContent = req
-    ? `Wykryto nieskonfigurowany węzeł: ${pairState.temp > -50 ? pairState.temp.toFixed(1) + ' °C, ' : ''}ogłoszenie ${pairState.age} s temu`
-    : 'Brak wykrytego nieskonfigurowanego węzła — włącz nowy węzeł i poczekaj na ogłoszenie (T00).';
+  /* Show all detected LoRa devices with their radio ids. */
+  $('pairModalList').innerHTML = nodes.length
+    ? nodes.map(nd => {
+        const id = nd.id;
+        const temp = nd.temp > -50 ? nd.temp.toFixed(1) + ' °C' : '';
+        const age = nd.age >= 0 ? nd.age + ' s temu' : '';
+        const assigned = free.indexOf(id) < 0;
+        return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:${assigned ? 'not-allowed' : 'pointer'};opacity:${assigned ? 0.5 : 1}">
+          <input type="radio" name="pairIdOpt" value="${id}" ${assigned ? 'disabled' : ''}>
+          <span style="font-weight:700">ID ${id}</span>
+          <span style="color:var(--muted);font-size:12px">${temp} · ${age}</span>
+          ${assigned ? '<span style="color:var(--warn);font-size:11px">zajęty</span>' : ''}
+        </label>`;
+      }).join('')
+    : '<div style="color:var(--muted);padding:8px">Brak wykrytych urządzeń LoRa — włącz nowy węzeł i poczekaj na ogłoszenie.</div>';
+  $('pairModalReq').textContent = nodes.length
+    ? `Wykryto ${nodes.length} urządzenień LoRa. Wybierz wolne ID:`
+    : 'Brak wykrytych urządzeń LoRa — włącz nowy węzeł i poczekaj na ogłoszenie (T00).';
   $('btnPairAssign').disabled = !free.length;
   /* Reset to the add-flow handler (repair flow overrides it). */
   $('btnPairAssign').onclick = async () => {
@@ -444,16 +456,23 @@ $('btnPairClose').onclick = closePairModal;
 /* Change radio id of a defined sensor (row button). */
 function openRepairModal(fromId) {
   const m = $('pairModal');
+  const nodes = (pairState && pairState.nodes) ? pairState.nodes : [];
   const free = (pairState && pairState.free) ? pairState.free : [];
-  $('pairModalList').innerHTML = free.length
-    ? free.map(n => `
-      <label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:pointer">
-        <input type="radio" name="pairIdOpt" value="${n}">
-        <span style="font-weight:700">ID ${n}</span>
-        <span style="color:var(--muted);font-size:12px">z ID ${fromId} → ${n}</span>
-      </label>`).join('')
-    : '<div style="color:var(--muted);padding:8px">Brak wolnych ID</div>';
-  $('pairModalReq').textContent = `Zmiana ID LoRa czujnika #${fromId}. Węzeł musi być w zasięgu (ramka REPAIR ${fromId} → <nowy>).`;
+  /* Show detected devices; only offer free ids for reassignment. */
+  $('pairModalList').innerHTML = nodes.length
+    ? nodes.map(nd => {
+        const id = nd.id;
+        const canChange = free.indexOf(id) >= 0 && id !== fromId;
+        return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:${canChange ? 'pointer' : 'not-allowed'};opacity:${canChange ? 1 : 0.5}">
+          <input type="radio" name="pairIdOpt" value="${id}" ${canChange ? '' : 'disabled'}>
+          <span style="font-weight:700">ID ${id}</span>
+          <span style="color:var(--muted);font-size:12px">${nd.temp > -50 ? nd.temp.toFixed(1) + ' °C' : ''} · ${nd.age >= 0 ? nd.age + ' s temu' : ''}</span>
+          ${id === fromId ? '<span style="color:var(--accent);font-size:11px">bieżący</span>' : ''}
+          ${!canChange && id !== fromId ? '<span style="color:var(--warn);font-size:11px">zajęty</span>' : ''}
+        </label>`;
+      }).join('')
+    : '<div style="color:var(--muted);padding:8px">Brak wykrytych urządzeń LoRa</div>';
+  $('pairModalReq').textContent = `Zmiana ID LoRa czujnika #${fromId}. Wybierz nowy ID (wolny slot):`;
   $('btnPairAssign').disabled = !free.length;
   $('btnPairAssign').onclick = async () => {
     const sel = document.querySelector('input[name="pairIdOpt"]:checked');
