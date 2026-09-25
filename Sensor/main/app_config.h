@@ -20,6 +20,12 @@ extern "C" {
 /* ---- 1-Wire bus ---- */
 #define HE_GPIO_ONEWIRE        GPIO_NUM_32   /* DS18B20 data line        */
 
+/* ---- Factory-reset button (EN / BOOT strap pin GPIO0) ----
+ * Holding it for at least HE_RESET_HOLD_SEC seconds erases the paired
+ * radio id from NVS; the node then reboots into unpaired (T00) mode. */
+#define HE_GPIO_RESET_BTN      GPIO_NUM_0
+#define HE_RESET_HOLD_SEC      5
+
 /* ---- LoRa radio (UART) ---- */
 #define HE_LORA_UART           UART_NUM_1
 #define HE_LORA_UART_TX         GPIO_NUM_12

@@ -50,6 +50,10 @@ void lora_pair_request(lora_node_desc_t *nodes, int *count, int max)
 void lora_pair_assign(int id)            { pair_broadcast("PAIR %d&", id, id); }
 void lora_repair_assign(int old, int id) { pair_broadcast("REPAIR %d %d&", old, id); }
 
+/* Broadcast "RESET&" — the addressed (or any listening) node erases its
+ * persisted radio id and reboots into the factory-default unpaired mode. */
+void lora_unpair_reset(void) { pair_broadcast("RESET&", 0, 0); }
+
 static void pair_broadcast(const char *fmt, int a, int b)
 {
     char cmd[24];

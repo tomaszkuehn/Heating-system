@@ -110,7 +110,6 @@ function renderDashboard(s) {
   $('sensOk').textContent = (s.sensors || []).filter(x => x.quality === 'OK' || x.quality === 'SIMULATED').length + '/' + (s.sensors||[]).length;
   $('uptime').textContent = fmtUp(s.uptime);
   $('simBanner').classList.toggle('hidden', !s.sim);
-  $('sensCount').textContent = (s.sensors || []).filter(x => !x.external).length;
 
   /* Flash (LittleFS data partition) usage + wear indicator. */
   const fb = $('flashBar'), fwEl = $('flashWear');
@@ -296,7 +295,7 @@ function renderSensors(sensors) {
       <td class="hcell">${healthDot(q, sx)}</td>
       <td class="qcell q-${q}">${q}${sx.window ? ' ⊗' : ''}</td>
       <td class="ecell">${fmtT(sx.eff)}</td>
-      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.rx ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-repair="${sx.id}" title="Zmień ID LoRa tego węzła">ID…</button>` : ''}</td>`;
+      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.rx ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-repair="${sx.id}" title="Zmień ID LoRa tego węzła">ID…</button><button class="btn btn-danger" style="padding:4px 8px;margin-left:4px" data-unpair="${sx.id}" title="Usuń czujkę LoRa (węzeł wróci do ustawień fabrycznych)">Usuń</button>` : ''}</td>`;
     const inputs = tr.querySelectorAll('input');
     tr.querySelector('button[data-id]').onclick = () => {
       const body = { name: inputs[0].value, active: inputs[1].checked,
@@ -308,6 +307,22 @@ function renderSensors(sensors) {
     if (rb) rb.onclick = () => post('/api/sensor/restore?id=' + sx.id, '').then(() => refresh());
     const rp = tr.querySelector('button[data-repair]');
     if (rp) rp.onclick = () => openRepairModal(sx.id);
+    /* Delete LoRa sensor: extra inline confirmation before the call. */
+    const up = tr.querySelector('button[data-unpair]');
+    if (up) up.onclick = () => {
+      const c = document.createElement('span');
+      c.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-left:4px';
+      c.innerHTML = `<span style="font-size:12px;color:var(--err);white-space:nowrap">Węzeł wróci do fabrycznych. Na pewno?</span>
+        <button class="btn btn-danger" style="padding:4px 10px;font-size:12px">Tak</button>
+        <button class="btn" style="padding:4px 10px;font-size:12px;background:#333">Nie</button>`;
+      const [yes, no] = c.querySelectorAll('button');
+      yes.onclick = async () => {
+        const r = await fetch('/api/lora/unpair?id=' + sx.id, { method: 'POST' });
+        if (r.ok) refresh(); else c.remove();
+      };
+      c.querySelector('button:not(.btn-danger)').onclick = () => c.remove();
+      up.after(c);
+    };
     /* Click on health dot for problem sensors shows detail panel. */
     const hd = tr.querySelector('.hdot');
     if (hd && q !== 'OK' && q !== 'SIMULATED' && q !== 'DISABLED') {
@@ -391,8 +406,11 @@ async function refresh(live) {
 
 /* ---- LoRa pairing (unpaired node detection + id assignment) ----
  * "Dodaj czujnik" opens the pairing modal: it lists the detected unpaired
- * node (if any), the free radio ids, and assigns the selected id. */
+ * node (if any), the free radio ids, and assigns the selected id.
+ * The modal stays open and refreshes itself in the background (live scan)
+ * until the user closes it or a pairing completes. */
 let pairState = null;
+let pairModalTimer = null;
 
 async function pollPair() {
   const p = await api('/api/lora/pair');
@@ -411,29 +429,51 @@ async function pollPair() {
   // keep old free[] for backward compat, plus nodes[]
 }
 
-function openPairModal() {
-  const m = $('pairModal');
+/* Re-render the currently open modal's list from the latest pairState
+ * without resetting scroll position or closing it (live background scan). */
+function refreshPairModalList() {
+  if ($('pairModal').classList.contains('hidden')) return;
   const nodes = (pairState && pairState.nodes) ? pairState.nodes : [];
   const free = (pairState && pairState.free) ? pairState.free : [];
-  /* Show all detected LoRa devices with their radio ids. */
-  $('pairModalList').innerHTML = nodes.length
+  const list = $('pairModalList');
+  const prevSel = document.querySelector('input[name="pairIdOpt"]:checked');
+  const prevSelVal = prevSel ? prevSel.value : null;
+  list.innerHTML = nodes.length
     ? nodes.map(nd => {
         const id = nd.id;
         const temp = nd.temp > -50 ? nd.temp.toFixed(1) + ' °C' : '';
         const age = nd.age >= 0 ? nd.age + ' s temu' : '';
         const assigned = free.indexOf(id) < 0;
+        const checked = (prevSelVal !== null && +prevSelVal === id) ? 'checked' : '';
         return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:${assigned ? 'not-allowed' : 'pointer'};opacity:${assigned ? 0.5 : 1}">
-          <input type="radio" name="pairIdOpt" value="${id}" ${assigned ? 'disabled' : ''}>
+          <input type="radio" name="pairIdOpt" value="${id}" ${assigned ? 'disabled' : ''} ${checked}>
           <span style="font-weight:700">ID ${id}</span>
           <span style="color:var(--muted);font-size:12px">${temp} · ${age}</span>
           ${assigned ? '<span style="color:var(--warn);font-size:11px">zajęty</span>' : ''}
         </label>`;
       }).join('')
-    : '<div style="color:var(--muted);padding:8px">Brak wykrytych urządzeń LoRa — włącz nowy węzeł i poczekaj na ogłoszenie.</div>';
+    : '<div style="color:var(--muted);padding:8px">Skanowanie… Brak wykrytych urządzeń LoRa. Włącz nowy węzeł — okno odświeża się automatycznie.</div>';
   $('pairModalReq').textContent = nodes.length
-    ? `Wykryto ${nodes.length} urządzenień LoRa. Wybierz wolne ID:`
-    : 'Brak wykrytych urządzeń LoRa — włącz nowy węzeł i poczekaj na ogłoszenie (T00).';
+    ? `Wykryto ${nodes.length} ${nodes.length === 1 ? 'urządzenie' : 'urządzeń'} LoRa. Wybierz wolne ID:`
+    : 'Skanowanie radia w tle — włącz nowy węzeł i poczekaj na ogłoszenie (T00).';
   $('btnPairAssign').disabled = !free.length;
+}
+
+function startPairModalTimer() {
+  stopPairModalTimer();
+  pairModalTimer = setInterval(async () => {
+    if ($('pairModal').classList.contains('hidden')) return stopPairModalTimer();
+    await pollPair();
+    refreshPairModalList();
+  }, 2000);
+}
+function stopPairModalTimer() {
+  if (pairModalTimer) { clearInterval(pairModalTimer); pairModalTimer = null; }
+}
+
+function openPairModal() {
+  const m = $('pairModal');
+  refreshPairModalList();
   /* Reset to the add-flow handler (repair flow overrides it). */
   $('btnPairAssign').onclick = async () => {
     const sel = document.querySelector('input[name="pairIdOpt"]:checked');
@@ -442,21 +482,25 @@ function openPairModal() {
     if (r.ok) { closePairModal(); await refresh(); }
   };
   m.classList.remove('hidden');
+  startPairModalTimer();
 }
 
-function closePairModal() { $('pairModal').classList.add('hidden'); }
+function closePairModal() { stopPairModalTimer(); $('pairModal').classList.add('hidden'); }
 
 $('btnAddSensor').onclick = openPairModal;
 $('btnAddSensorBanner').onclick = openPairModal;
 $('btnPairClose').onclick = closePairModal;
 /* btnPairAssign click is bound per-flow inside openPairModal/openRepairModal. */
 
-/* Change radio id of a defined sensor (row button). */
-function openRepairModal(fromId) {
-  const m = $('pairModal');
+/* Change radio id of a defined sensor (row button). Reuses the same
+ * live-scan modal; the repair render variant is selected via mode flag. */
+let pairModalMode = 'pair';   /* 'pair' | 'repair' */
+let pairModalFromId = 0;
+
+function renderRepairList() {
   const nodes = (pairState && pairState.nodes) ? pairState.nodes : [];
   const free = (pairState && pairState.free) ? pairState.free : [];
-  /* Show detected devices; only offer free ids for reassignment. */
+  const fromId = pairModalFromId;
   $('pairModalList').innerHTML = nodes.length
     ? nodes.map(nd => {
         const id = nd.id;
@@ -469,16 +513,35 @@ function openRepairModal(fromId) {
           ${!canChange && id !== fromId ? '<span style="color:var(--warn);font-size:11px">zajęty</span>' : ''}
         </label>`;
       }).join('')
-    : '<div style="color:var(--muted);padding:8px">Brak wykrytych urządzeń LoRa</div>';
+    : '<div style="color:var(--muted);padding:8px">Skanowanie… Brak wykrytych urządzeń LoRa. Okno odświeża się automatycznie.</div>';
   $('pairModalReq').textContent = `Zmiana ID LoRa czujnika #${fromId}. Wybierz nowy ID (wolny slot):`;
   $('btnPairAssign').disabled = !free.length;
+}
+
+function openRepairModal(fromId) {
+  pairModalMode = 'repair';
+  pairModalFromId = fromId;
+  /* Swap the live-refresher into repair rendering while this flow is open. */
+  const repairTick = () => {
+    if (!$('pairModal').classList.contains('hidden')) renderRepairList();
+  };
+  startPairModalTimer();
+  const oldTimer = pairModalTimer;
+  stopPairModalTimer();
+  pairModalTimer = setInterval(async () => {
+    if ($('pairModal').classList.contains('hidden')) return stopPairModalTimer();
+    await pollPair();
+    repairTick();
+  }, 2000);
+  void oldTimer;
+  renderRepairList();
   $('btnPairAssign').onclick = async () => {
     const sel = document.querySelector('input[name="pairIdOpt"]:checked');
     if (!sel) return;
     const r = await fetch(`/api/lora/repair?from=${fromId}&to=${sel.value}`, { method: 'POST' });
     if (r.ok) { closePairModal(); await refresh(); }
   };
-  m.classList.remove('hidden');
+  $('pairModal').classList.remove('hidden');
 }
 
 async function loadDiag() {
@@ -829,8 +892,7 @@ function populateSensorToggles(sensors) {
 
 /* ---- wiring ---- */
 $('btnBoost').onclick = () => post('/api/boost?on=' + (lastState && lastState.boost ? 0 : 1), '').then(() => refresh());
-$('btnSensInc').onclick = () => { const n = lastState ? (lastState.sensors||[]).filter(x=>!x.external).length + 1 : 1; post('/api/sensors/count?n=' + Math.min(6, n), '').then(() => refresh()); };
-$('btnSensDec').onclick = () => { const n = lastState ? (lastState.sensors||[]).filter(x=>!x.external).length - 1 : 1; post('/api/sensors/count?n=' + Math.max(1, n), '').then(() => refresh()); };
+/* Sensor add/remove is done via the pairing modal / per-row delete button. */
 /* Kill button: show inline confirmation, then toggle. */
 let killPending = false;
 $('btnKill').onclick = () => {

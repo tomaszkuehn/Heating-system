@@ -24,6 +24,7 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "driver/gpio.h"
 
 static const char *TAG = "main";
 
@@ -70,6 +71,39 @@ static int parse_pair(const char *line)
     return (n >= 1 && n <= HE_MAX_SENSORS) ? n : 0;
 }
 
+/* ---- Factory reset: hold the EN/BOOT button (GPIO0) for >5 s ----
+ * Erases "node_id" from NVS and reboots; the node comes back unpaired
+ * (T00 announcements) ready for a fresh pairing. */
+static void factory_reset_check(void)
+{
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << HE_GPIO_RESET_BTN,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io);
+
+    int held = 0;
+    for (;;) {
+        if (gpio_get_level(HE_GPIO_RESET_BTN) != 0) return;   /* released */
+        held++;
+        if (held >= HE_RESET_HOLD_SEC) break;
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    ESP_LOGW(TAG, "button held %d s — factory reset (erasing node_id)", held);
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "node_id");
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));   /* let logs flush */
+    esp_restart();
+}
+
 /* Parse "REPAIR <old> <new>" (controller -> node): addressed re-pairing.
  * Only the node whose current radio id == old accepts it. Returns the new
  * id (1..6) or 0. */
@@ -83,6 +117,24 @@ static int parse_repair(const char *line, uint8_t current_id)
     while (*p == ' ') p++;
     int n = atoi(p);
     return (n >= 1 && n <= HE_MAX_SENSORS && n != current_id) ? n : 0;
+}
+
+/* Detect "RESET&" (controller -> node): erase the paired id and reboot
+ * into unpaired (factory-default) mode. Returns true on match. */
+static bool is_reset_cmd(const char *line)
+{
+    return strncmp(line, "RESET", 5) == 0;
+}
+
+/* Erase the persisted radio id (factory default = unpaired T00). */
+static void node_id_erase(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, "node_id");
+    nvs_commit(h);
+    nvs_close(h);
+    g_node_id = 0;
 }
 
 /* Unpaired mode: announce with T00 frames, wait for PAIR assignment. */
@@ -107,6 +159,7 @@ static void pairing_loop(void)
         /* Wait for the controller's assignment. */
         int rc = lora_receive_line(HE_LORA_RX_WINDOW_MS, line, sizeof(line));
         if (rc > 0) {
+            if (is_reset_cmd(line)) continue;   /* already factory default */
             int new_id = parse_pair(line);
             if (new_id > 0 && node_id_save((uint8_t)new_id)) {
                 char ack[16];
@@ -209,6 +262,12 @@ static void sensor_task(void *arg)
         char cmd[HE_LORA_LINE_MAX];
         int rc = lora_receive_line(HE_LORA_RX_WINDOW_MS, cmd, sizeof(cmd));
         if (rc > 0) {
+            if (is_reset_cmd(cmd)) {
+                ESP_LOGW(TAG, "RESET command — factory default");
+                node_id_erase();
+                vTaskDelay(pdMS_TO_TICKS(200));
+                esp_restart();
+            }
             int new_id = parse_pair(cmd);
             if (new_id == 0) new_id = parse_repair(cmd, g_node_id);
             if (new_id > 0 && new_id != g_node_id && node_id_save((uint8_t)new_id)) {
@@ -240,6 +299,9 @@ static void sensor_task(void *arg)
             esp_restart();
         }
 
+        /* Factory reset check: EN/BOOT held for >5 s erases the id. */
+        factory_reset_check();
+
         /* Period between cycles. */
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -269,6 +331,10 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs_flash_init());
     }
     node_id_load();
+
+    /* Factory reset: EN/BOOT held for >5 s at boot erases the id and
+     * restarts unpaired. */
+    factory_reset_check();
 
     /* 1-Wire bus. */
     ow_init(HE_GPIO_ONEWIRE);

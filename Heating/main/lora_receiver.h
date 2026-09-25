@@ -53,6 +53,10 @@ void lora_pair_assign(int id);
  * sensor (only the node currently holding <old> accepts). */
 void lora_repair_assign(int old, int id);
 
+/* Broadcast "RESET&" — tell the node(s) to erase the persisted radio id
+ * and reboot unpaired (factory default). Used when deleting a sensor. */
+void lora_unpair_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

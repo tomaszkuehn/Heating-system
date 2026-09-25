@@ -1162,6 +1162,38 @@ static esp_err_t h_lora_repair_post(httpd_req_t *req)
     return send_text(req, "ok", 200);
 }
 
+/* ---- /api/lora/unpair?id=N (POST) — delete a LoRa sensor ----
+ * Broadcasts "RESET&" so the node returns to factory defaults (unpaired
+ * T00 mode), then removes the sensor slot and re-normalises weights. ---- */
+static esp_err_t h_lora_unpair_post(httpd_req_t *req)
+{
+    char idstr[8];
+    if (!qarg(req, "id", idstr, sizeof(idstr))) return send_text(req, "missing id", 400);
+    int id = atoi(idstr);
+    if (id < 1 || id > HE_MAX_SENSORS) return send_text(req, "id out of range", 400);
+    CFG_LOCK();
+    int found = -1;
+    for (int i = 0; i < s_cfg->sensor_count; i++)
+        if (s_cfg->sensors[i].id == id) { found = i; break; }
+    if (found < 0) CFG_RET(send_text(req, "no such sensor", 400));
+    /* Compact the array: shift everything after the removed slot left. */
+    for (int i = found; i < s_cfg->sensor_count - 1; i++)
+        s_cfg->sensors[i] = s_cfg->sensors[i + 1];
+    s_cfg->sensor_count--;
+    memset(&s_cfg->sensors[s_cfg->sensor_count], 0, sizeof(sensor_t));
+    /* Re-normalise weights across the remaining sensors. */
+    float wsum = 0;
+    for (int i = 0; i < s_cfg->sensor_count; i++) wsum += s_cfg->sensors[i].weight;
+    if (wsum > 0) for (int i = 0; i < s_cfg->sensor_count; i++) s_cfg->sensors[i].weight /= wsum;
+    sensor_manager_bind(s_cfg->sensors, s_cfg->sensor_count,
+                        s_cfg->has_external ? &s_cfg->sensors[HE_MAX_SENSORS] : NULL);
+    storage_save_config(s_cfg);
+    he_config_unlock();
+    /* UART broadcast sleeps — must run outside the config lock. */
+    lora_unpair_reset();
+    return send_text(req, "ok", 200);
+}
+
 /* ---- /api/lora/test — E32 module communication check ----
  * Per the E32-433T20D datasheet (mode 3, M0=M1=1, 9600 8N1): three C1 bytes
  * read the module's saved parameters; it answers C0 + 5 bytes. The lora_rx
@@ -1373,6 +1405,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/lora/pair",   .method = HTTP_GET,  .handler = h_lora_pair_get,  .user_ctx = NULL },
     { .uri = "/api/lora/pair",   .method = HTTP_POST, .handler = h_lora_pair_post, .user_ctx = NULL },
     { .uri = "/api/lora/repair", .method = HTTP_POST, .handler = h_lora_repair_post, .user_ctx = NULL },
+    { .uri = "/api/lora/unpair", .method = HTTP_POST, .handler = h_lora_unpair_post, .user_ctx = NULL },
     { .uri = "/api/ota",       .method = HTTP_POST, .handler = h_ota,         .user_ctx = NULL },
 };
 
