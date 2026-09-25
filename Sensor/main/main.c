@@ -332,6 +332,52 @@ static void sensor_task(void *arg)
 }
 
 /* ---- Setup ---- */
+/* ---- Rapid-reboot factory reset (works for the EN/reset button) ----
+ * The EN button hard-resets the chip, so software never sees the hold.
+ * Trick: count *rapid consecutive reboots* in NVS. Holding EN/RESET keeps
+ * the chip reboot-looping; when we observe HE_RESET_BOOT_COUNT boots that
+ * each died within HE_RESET_BOOT_WINDOW_SEC of uptime, treat it as the
+ * user holding the button — erase the id (factory default) and continue
+ * normally. The counter is cleared after HE_RESET_BOOT_CLEAR_SEC uptime
+ * so ordinary single resets never accumulate. */
+#define HE_RESET_BOOT_COUNT        5
+#define HE_RESET_BOOT_WINDOW_SEC   3
+#define HE_RESET_BOOT_CLEAR_SEC    30
+
+static void rapid_reset_check(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK) return;
+    uint8_t cnt = 0;
+    nvs_get_u8(h, "boot_count", &cnt);
+    cnt++;
+    nvs_set_u8(h, "boot_count", cnt);
+    nvs_commit(h);
+    nvs_close(h);
+
+    ESP_LOGI(TAG, "boot %d/%d for rapid-reset detection",
+             cnt, HE_RESET_BOOT_COUNT);
+    if (cnt >= HE_RESET_BOOT_COUNT) {
+        ESP_LOGW(TAG, "rapid reboot loop detected — factory reset (erasing node_id)");
+        node_id_erase();
+        if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_erase_key(h, "boot_count");
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
+
+    /* Clear the counter once we stayed up long enough (normal operation). */
+    vTaskDelay(pdMS_TO_TICKS(HE_RESET_BOOT_CLEAR_SEC * 1000));
+    if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "boot_count");
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "DS18x20 sensor node starting (boot %llu ms)",
@@ -356,9 +402,13 @@ void app_main(void)
     }
     node_id_load();
 
-    /* Factory reset: EN/BOOT held for >5 s at boot erases the id and
-     * restarts unpaired. */
+    /* Factory reset #1: BOOT (GPIO0) held for >5 s -> LED hint, erase on
+     * release. */
     factory_reset_check();
+
+    /* Factory reset #2: EN/reset held -> rapid reboot loop; after
+     * HE_RESET_BOOT_COUNT boots inside the window erase the id. */
+    rapid_reset_check();
 
     /* 1-Wire bus. */
     ow_init(HE_GPIO_ONEWIRE);
