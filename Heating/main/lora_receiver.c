@@ -11,6 +11,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "lora";
 
@@ -18,6 +19,51 @@ static const char *TAG = "lora";
  * idles instead of competing for incoming bytes (it would otherwise swallow
  * the module's config response). */
 static volatile bool s_test_active = false;
+
+/* ---- Pairing (unpaired node announcement) ----
+ * An unpaired node announces itself with frames "TT.TTT T00&". The latest
+ * announcement (temperature + age) is stored here; the web UI reads it via
+ * lora_pair_request() and assigns an id with lora_pair_assign(). */
+#define HE_PAIR_REQ_TTL_MS  30000   /* announcement older than this is stale */
+
+static int64_t s_pair_req_us = 0;
+static float   s_pair_req_temp = 0.0f;
+
+static void pair_broadcast(const char *fmt, int a, int b);
+
+void lora_pair_request(float *temp, int *age_s)
+{
+    if (temp) *temp = s_pair_req_temp;
+    if (age_s) {
+        *age_s = s_pair_req_us
+                     ? (int)((esp_timer_get_time() - s_pair_req_us) / 1000000)
+                     : -1;
+    }
+}
+
+/* Broadcast a pairing command. mode PAIR (new node, id 1..6) sends
+ * "PAIR <id>&"; mode REPAIR (change id of a defined sensor) sends
+ * "REPAIR <old> <new>&" which only the node currently holding <old>
+ * accepts. Replies "OK T<n>&" surface as normal frames. */
+void lora_pair_assign(int id)            { pair_broadcast("PAIR %d&", id, id); }
+void lora_repair_assign(int old, int id) { pair_broadcast("REPAIR %d %d&", old, id); }
+
+static void pair_broadcast(const char *fmt, int a, int b)
+{
+    char cmd[24];
+    snprintf(cmd, sizeof(cmd), fmt, a, b);
+    /* The node listens for pairing/repair commands only inside its ~5 s ACK
+     * window once per ~7 s cycle. Broadcast long enough to cover one full
+     * node cycle so the command is guaranteed to land inside a window. */
+    for (int i = 0; i < 30; i++) {
+        uart_write_bytes(HE_LORA_UART, cmd, strlen(cmd));
+        uart_write_bytes(HE_LORA_UART, "\r\n", 2);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    ESP_LOGI(TAG, "pairing broadcast sent: %s", cmd);
+    /* The request is consumed: UI should not offer a stale announcement. */
+    s_pair_req_us = 0;
+}
 
 void lora_receiver_test_mode(bool on)
 {
@@ -71,8 +117,18 @@ static void process_line(const char *line)
         return;
     }
 
-    if (id == 0 || he_isnan(temp)) {
-        ESP_LOGW(TAG, "sensor reports error");
+    if (id == 0) {
+        /* "TT.TTT T00&" = unpaired node announcement (distinct from the
+         * "ERR T&" failure marker handled above, which arrives with a NaN
+         * temperature). Record only real announcements for the web pairing
+         * UI; do not feed them to the sensor manager. */
+        if (he_isnan(temp)) {
+            ESP_LOGW(TAG, "sensor reports error (ERR T&)");
+            return;
+        }
+        s_pair_req_temp = temp;
+        s_pair_req_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "pairing request: T00 = %.2f C", temp);
         return;
     }
 

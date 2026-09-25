@@ -100,4 +100,25 @@ bool lora_receive(uint32_t window_ms, lora_rx_cb_t on_byte, void *user)
     return false;
 }
 
+int lora_receive_line(uint32_t window_ms, char *buf, size_t buflen)
+{
+    if (!buf || buflen < 2) return -1;
+    int64_t end = esp_timer_get_time() + (int64_t)window_ms * 1000;
+    size_t n = 0;
+    uint8_t b;
+    while (esp_timer_get_time() < end) {
+        int got = uart_read_bytes(HE_LORA_UART, &b, 1, pdMS_TO_TICKS(20));
+        if (got <= 0) continue;
+        if (b == '\r') continue;
+        if (b == '\n' || b == '&') {
+            if (n == 0) continue;          /* stray terminator */
+            buf[n] = '\0';
+            return (int)n;
+        }
+        if (n < buflen - 1) buf[n++] = (char)b;
+    }
+    if (n > 0) { buf[n] = '\0'; return (int)n; }   /* partial line, still usable */
+    return -1;
+}
+
 int lora_power_status(void) { return s_power; }

@@ -20,6 +20,22 @@
 <div id="simBanner" class="sim-banner hidden">
   ⚠ TRYB SYMULACJI AKTYWNY — sygnały nie trafiają na fizyczne GPIO (chyba że włączono tryb mieszany)
 </div>
+<div id="pairBanner" class="sim-banner hidden" style="background:#3a2d00;border-color:#8a6d1a">
+  📡 Wykryto nieskonfigurowany czujnik LoRa (<span id="pairInfo">--</span>).
+  <button id="btnAddSensorBanner" class="btn" style="padding:4px 12px;margin-left:10px">Dodaj czujnik</button>
+</div>
+
+<div id="pairModal" class="auth-overlay hidden">
+  <div class="auth-box" style="min-width:320px">
+    <h3 style="margin:0 0 10px">Dodaj czujnik LoRa</h3>
+    <div id="pairModalReq" style="font-size:13px;color:var(--muted);margin-bottom:10px"></div>
+    <div id="pairModalList" style="display:flex;flex-direction:column;gap:6px;max-height:260px;overflow:auto"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button id="btnPairAssign" class="btn" style="flex:1">Paruj</button>
+      <button id="btnPairClose" class="btn" style="flex:0">Anuluj</button>
+    </div>
+  </div>
+</div>
 
 <main>
   <!-- Dashboard -->
@@ -76,6 +92,8 @@
   <section class="card">
     <h2>Czujniki — wagi / offsety</h2>
     <div class="actions" style="margin:0 0 8px">
+      <button id="btnAddSensor" class="btn" style="padding:6px 14px">＋ Dodaj czujnik LoRa</button>
+      <span style="flex:1"></span>
       <span class="k" style="color:var(--muted);font-size:13px;align-self:center">Liczba czujników wewn.:</span>
       <button id="btnSensDec" class="btn" style="padding:6px 12px">−</button>
       <span id="sensCount" class="v" style="font-size:16px;align-self:center">--</span>

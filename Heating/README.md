@@ -141,6 +141,41 @@ tym samym kanale są obecnie ignorowane przez parser (wymagany format
 `TT.TTT T<id>&`) — planowane utwardzenie protokołu (MAC + anti-replay) jest
 zaprojektowane, ale jeszcze niewdrożone.
 
+### Parowanie węzłów LoRa (dodanie czujnika / zmiana ID)
+
+Protokół radiowy (tekstowy, 433 MHz):
+
+- Węzeł niesparowany (NVS `cfg`/`node_id` = 0) ogłasza się ramką
+  `TT.TTT T00&` — temperatura sonda + ID 00.
+- Węzeł sparowany wysyła `TT.TTT T<n>&` (ID = `node_id` + indeks sondy).
+- Kontroler potwierdza każdą ramkę pojedynczym bajtem `'X'`.
+- Węzeł bez odczytu sond wysyła marker błędu `ERR T&` (temp = NaN).
+
+Procedura parowania (UI → „＋ Dodaj czujnik LoRa" albo banner „Wykryto
+nieskonfigurowany czujnik"):
+
+1. Węzeł w trybie niesparowanym nadaje w pętli ramki `T00` (co ~6 s).
+2. Kontroler rejestruje ostatnie ogłoszenie (`s_pair_req_temp/us`, TTL 30 s)
+   i udostępnia je przez `GET /api/lora/pair` →
+   `{"request":true,"temp":21.9,"age":3,"free":[2,3,4,5,6]}`.
+   `free[]` = ID radiowe 1..6 nieobsługiwane przez żaden aktywny czujnik.
+3. Użytkownik wybiera ID z listy; `POST /api/lora/pair?id=N` tworzy brakujące
+   sloty czujników (nazwa domyślna „Czujnik LoRa %d") i wysyła w radiu
+   broadcast `PAIR <n>&` powtarzany ~6 s (30 × co 200 ms — broadcast trwa
+   dłużej niż cykl węzła, więc trafia w okno nasłuchu ACK węzła).
+4. Węzeł zapisuje ID do NVS (przetrwa restart), odpowiada `OK T<n>&` i od tej
+   chwili nadaje jako `T<n>`.
+
+Zmiana ID istniejącego węzła (przycisk „ID…" w wierszu czujnika radiowego):
+
+- `POST /api/lora/repair?from=<stare>&to=<nowe>` wysyła broadcast
+  `REPAIR <stare> <nowe>&`; akceptuje go wyłącznie węzeł aktualnie
+  posiadający ID `<stare>` (parsowane w oknie ACK również w trybie
+  sparowanym). Węzeł zapisuje nowy ID w NVS i odpowiada `OK T<n>&`.
+
+Uwaga: ramka `ERR T&` (brak sond) jest ignorowana przez logikę parowania —
+dawniej była błędnie traktowana jako ogłoszenie `T00` z temperaturą NaN.
+
 ## Pamięć trwała (spec pkt 9–10)
 
 - **NVS** — konfiguracja klucz-wartość (sieć, czujniki, wagi, offsety,
@@ -262,8 +297,15 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   radiowa nie jest błędem). **Kliknięcie** na czerwoną lub żółtą kropkę
   rozwija panel ze szczegółowym opisem problemu: przyczyna, czas od
   ostatniego odczytu (`last_seen`) i skutek dla systemu (np. wykluczenie
-  ze średniej). Dane o wieku odczytu pochodzą z pola `last_seen`
-  (sekundy od ostatniej aktualizacji), dodanego do `/api/state`.
+   ze średniej). Dane o wieku odczytu pochodzą z pola `last_seen`
+   (sekundy od ostatniej aktualizacji), dodanego do `/api/state`.
+- **Parowanie czujników LoRa** — przycisk **„＋ Dodaj czujnik LoRa"** nad tabelą
+  czujników (oraz w banerze o wykryciu węzła) otwiera modal z listą wolnych ID
+  (`free[]` z `GET /api/lora/pair`, odświeżane co 5 s) i statusem wykrytego
+  węzła (temperatura ogłoszenia + wiek). Po wyborze ID węzeł jest parowany
+  radiowo (`PAIR <n>&`, patrz sekcja „Parowanie węzłów LoRa"). W wierszu
+  czujnika radiowego dodatkowy przycisk **„ID…"** pozwala zmienić ID węzła
+  (`REPAIR <stare> <nowe>&`) na dowolne wolne.
 - **Wykres zużycia energii (365 dni)** — słupki **minut grzania na dobę**
   (pomarańczowe) z nałożoną linią średniej temperatury systemowej (niebieska).
   Każdy słupek to jeden dzień; oś X to stałe okno **365 dni** kończące się

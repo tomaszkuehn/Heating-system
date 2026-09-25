@@ -38,6 +38,11 @@ void lora_write(const uint8_t *data, size_t len);
 typedef bool (*lora_rx_cb_t)(uint8_t byte, void *user);
 bool lora_receive(uint32_t window_ms, lora_rx_cb_t on_byte, void *user);
 
+/* Receive one protocol line ("...\r\n" or "...&") into buf (NUL-terminated)
+ * within window_ms. Returns line length (>=0) or -1 on timeout. Trailing
+ * terminator ('\n' or '&') is stripped. */
+int lora_receive_line(uint32_t window_ms, char *buf, size_t buflen);
+
 /* Current power level (HE_LORA_PWR_LOW / HE_LORA_PWR_HIGH). */
 int lora_power_status(void);
 

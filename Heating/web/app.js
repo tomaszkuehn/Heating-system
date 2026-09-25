@@ -296,7 +296,7 @@ function renderSensors(sensors) {
       <td class="hcell">${healthDot(q, sx)}</td>
       <td class="qcell q-${q}">${q}${sx.window ? ' ⊗' : ''}</td>
       <td class="ecell">${fmtT(sx.eff)}</td>
-      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}</td>`;
+      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.rx ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-repair="${sx.id}" title="Zmień ID LoRa tego węzła">ID…</button>` : ''}</td>`;
     const inputs = tr.querySelectorAll('input');
     tr.querySelector('button[data-id]').onclick = () => {
       const body = { name: inputs[0].value, active: inputs[1].checked,
@@ -306,6 +306,8 @@ function renderSensors(sensors) {
     };
     const rb = tr.querySelector('button[data-restore]');
     if (rb) rb.onclick = () => post('/api/sensor/restore?id=' + sx.id, '').then(() => refresh());
+    const rp = tr.querySelector('button[data-repair]');
+    if (rp) rp.onclick = () => openRepairModal(sx.id);
     /* Click on health dot for problem sensors shows detail panel. */
     const hd = tr.querySelector('.hdot');
     if (hd && q !== 'OK' && q !== 'SIMULATED' && q !== 'DISABLED') {
@@ -384,6 +386,82 @@ async function refresh(live) {
   if (!s) return;
   if (live) { renderDashboard(s); updateSensorCells(s.sensors || []); }
   else render(s);
+  pollPair();
+}
+
+/* ---- LoRa pairing (unpaired node detection + id assignment) ----
+ * "Dodaj czujnik" opens the pairing modal: it lists the detected unpaired
+ * node (if any), the free radio ids, and assigns the selected id. */
+let pairState = null;
+
+async function pollPair() {
+  const p = await api('/api/lora/pair');
+  if (!p) return;
+  pairState = p;
+  const banner = $('pairBanner');
+  if (p.request) {
+    $('pairInfo').textContent = (p.temp > -50 ? p.temp.toFixed(1) + ' °C, ' : '')
+      + 'ogłoszenie ' + p.age + ' s temu';
+    banner.classList.remove('hidden');
+  } else {
+    banner.classList.add('hidden');
+  }
+}
+
+function openPairModal() {
+  const m = $('pairModal');
+  const free = (pairState && pairState.free) ? pairState.free : [];
+  const req = pairState && pairState.request;
+  $('pairModalList').innerHTML = free.length
+    ? free.map(n => `
+      <label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:pointer">
+        <input type="radio" name="pairIdOpt" value="${n}">
+        <span style="font-weight:700">ID ${n}</span>
+        <span style="color:var(--muted);font-size:12px">wolne w bazie</span>
+      </label>`).join('')
+    : '<div style="color:var(--muted);padding:8px">Brak wolnych ID (1–6 zajęte)</div>';
+  $('pairModalReq').textContent = req
+    ? `Wykryto nieskonfigurowany węzeł: ${pairState.temp > -50 ? pairState.temp.toFixed(1) + ' °C, ' : ''}ogłoszenie ${pairState.age} s temu`
+    : 'Brak wykrytego nieskonfigurowanego węzła — włącz nowy węzeł i poczekaj na ogłoszenie (T00).';
+  $('btnPairAssign').disabled = !free.length;
+  /* Reset to the add-flow handler (repair flow overrides it). */
+  $('btnPairAssign').onclick = async () => {
+    const sel = document.querySelector('input[name="pairIdOpt"]:checked');
+    if (!sel) return;
+    const r = await fetch('/api/lora/pair?id=' + sel.value, { method: 'POST' });
+    if (r.ok) { closePairModal(); await refresh(); }
+  };
+  m.classList.remove('hidden');
+}
+
+function closePairModal() { $('pairModal').classList.add('hidden'); }
+
+$('btnAddSensor').onclick = openPairModal;
+$('btnAddSensorBanner').onclick = openPairModal;
+$('btnPairClose').onclick = closePairModal;
+/* btnPairAssign click is bound per-flow inside openPairModal/openRepairModal. */
+
+/* Change radio id of a defined sensor (row button). */
+function openRepairModal(fromId) {
+  const m = $('pairModal');
+  const free = (pairState && pairState.free) ? pairState.free : [];
+  $('pairModalList').innerHTML = free.length
+    ? free.map(n => `
+      <label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:pointer">
+        <input type="radio" name="pairIdOpt" value="${n}">
+        <span style="font-weight:700">ID ${n}</span>
+        <span style="color:var(--muted);font-size:12px">z ID ${fromId} → ${n}</span>
+      </label>`).join('')
+    : '<div style="color:var(--muted);padding:8px">Brak wolnych ID</div>';
+  $('pairModalReq').textContent = `Zmiana ID LoRa czujnika #${fromId}. Węzeł musi być w zasięgu (ramka REPAIR ${fromId} → <nowy>).`;
+  $('btnPairAssign').disabled = !free.length;
+  $('btnPairAssign').onclick = async () => {
+    const sel = document.querySelector('input[name="pairIdOpt"]:checked');
+    if (!sel) return;
+    const r = await fetch(`/api/lora/repair?from=${fromId}&to=${sel.value}`, { method: 'POST' });
+    if (r.ok) { closePairModal(); await refresh(); }
+  };
+  m.classList.remove('hidden');
 }
 
 async function loadDiag() {
@@ -871,6 +949,7 @@ refresh().then(load24h).then(() => populateSensorToggles(lastState && lastState.
 setInterval(() => refresh(true), 2000);
 setInterval(loadDiag, 5000);
 setInterval(loadLog, 10000);
+setInterval(pollPair, 5000);
 /* Refetch history often enough that the accelerated (x10) run visibly scrolls. */
 setInterval(load24h, 8000);
 setInterval(loadDaily, 60000);

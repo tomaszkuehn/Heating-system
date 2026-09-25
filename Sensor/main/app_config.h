@@ -26,6 +26,7 @@ extern "C" {
 #define HE_LORA_UART_RX         GPIO_NUM_14
 #define HE_LORA_BAUD            9600
 #define HE_LORA_BUF_SIZE        256
+#define HE_LORA_LINE_MAX        48
 
 /* ---- LoRa mode-control pins (AUX / TX-RX) ---- */
 #define HE_GPIO_LORA_AUX        GPIO_NUM_25  /* mode-select (was 25)     */

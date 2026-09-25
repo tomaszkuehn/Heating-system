@@ -22,11 +22,104 @@
 #include "esp_task_wdt.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 static const char *TAG = "main";
 
 static ds18b20_reading_t g_probes[HE_MAX_SENSORS];
 static int g_probe_count = 0;
+
+/* ---- Paired radio id (1..6, 0 = unpaired / awaiting assignment) ----
+ * Persisted in NVS under "node_id". An unpaired node announces itself with
+ * frames "TT.TTT T00&" and listens for "PAIR <n>&" from the controller; on
+ * receipt it stores the id and switches to normal operation. */
+static uint8_t g_node_id = 0;
+
+static void node_id_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READONLY, &h) == ESP_OK) {
+        uint8_t v = 0;
+        if (nvs_get_u8(h, "node_id", &v) == ESP_OK && v >= 1 && v <= HE_MAX_SENSORS)
+            g_node_id = v;
+        nvs_close(h);
+    }
+    ESP_LOGI(TAG, "paired node id: %d", g_node_id);
+}
+
+static bool node_id_save(uint8_t id)
+{
+    if (id < 1 || id > HE_MAX_SENSORS) return false;
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t e = nvs_set_u8(h, "node_id", id);
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    if (e == ESP_OK) g_node_id = id;
+    return e == ESP_OK;
+}
+
+/* Parse "PAIR <n>" (controller -> node). Returns id 1..6 or 0 if not a PAIR. */
+static int parse_pair(const char *line)
+{
+    if (strncmp(line, "PAIR", 4) != 0) return 0;
+    const char *p = line + 4;
+    while (*p == ' ') p++;
+    int n = atoi(p);
+    return (n >= 1 && n <= HE_MAX_SENSORS) ? n : 0;
+}
+
+/* Parse "REPAIR <old> <new>" (controller -> node): addressed re-pairing.
+ * Only the node whose current radio id == old accepts it. Returns the new
+ * id (1..6) or 0. */
+static int parse_repair(const char *line, uint8_t current_id)
+{
+    if (strncmp(line, "REPAIR", 6) != 0) return 0;
+    const char *p = line + 6;
+    while (*p == ' ') p++;
+    long old_id = strtol(p, (char **)&p, 10);
+    if (old_id != (long)current_id) return 0;   /* not for this node */
+    while (*p == ' ') p++;
+    int n = atoi(p);
+    return (n >= 1 && n <= HE_MAX_SENSORS && n != current_id) ? n : 0;
+}
+
+/* Unpaired mode: announce with T00 frames, wait for PAIR assignment. */
+static void pairing_loop(void)
+{
+    char line[HE_LORA_LINE_MAX];
+    for (;;) {
+        esp_task_wdt_reset();
+
+        if (g_probe_count == 0)
+            g_probe_count = ds18b20_enumerate(g_probes, HE_MAX_SENSORS);
+        ds18b20_read_all(g_probes, g_probe_count);
+
+        float t = (g_probe_count > 0 && g_probes[0].centi != INT16_MIN)
+                      ? g_probes[0].centi / 100.0f : 0.0f;
+        char frame[24];
+        snprintf(frame, sizeof(frame), "%02.3f T00&", t);
+        ESP_LOGI(TAG, "unpaired, announcing: %s", frame);
+        lora_write((const uint8_t *)frame, strlen(frame));
+        lora_write((const uint8_t *)"\r\n", 2);
+
+        /* Wait for the controller's assignment. */
+        int rc = lora_receive_line(HE_LORA_RX_WINDOW_MS, line, sizeof(line));
+        if (rc > 0) {
+            int new_id = parse_pair(line);
+            if (new_id > 0 && node_id_save((uint8_t)new_id)) {
+                char ack[16];
+                snprintf(ack, sizeof(ack), "OK T%02d&", new_id);
+                lora_write((const uint8_t *)ack, strlen(ack));
+                lora_write((const uint8_t *)"\r\n", 2);
+                ESP_LOGI(TAG, "paired as T%02d", new_id);
+                return;   /* back to normal operation */
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
 
 /* ---- ACK handling (non-blocking receive window) ---- */
 typedef struct {
@@ -57,7 +150,9 @@ static int check_message(int status)
 static void send_temperature_frame(void)
 {
     /* Build one text line per probe: "TT.TTT T<id>&", matching the
-     * original sketch format (single-probe variant was "%02.3f T01&"). */
+     * original sketch format (single-probe variant was "%02.3f T01&").
+     * The radio id is the paired node id + probe index (a node can carry
+     * several probes on one bus: base, base+1, ...). */
     int sent = 0;
     for (int i = 0; i < g_probe_count; i++) {
         int16_t c = g_probes[i].centi;
@@ -72,8 +167,10 @@ static void send_temperature_frame(void)
         }
 
         char line[20];
-        snprintf(line, sizeof(line), "%02.3f T%02d&", t, g_probes[i].id);
-        ESP_LOGI(TAG, "T%d = %.2f C", g_probes[i].id, t);
+        int rid = g_node_id + i;   /* radio id = paired base + probe index */
+        if (rid > HE_MAX_SENSORS) rid = HE_MAX_SENSORS;
+        snprintf(line, sizeof(line), "%02.3f T%02d&", t, rid);
+        ESP_LOGI(TAG, "T%d = %.2f C", rid, t);
         lora_write((const uint8_t *)line, strlen(line));
         lora_write((const uint8_t *)"\r\n", 2);
         sent++;
@@ -106,8 +203,26 @@ static void sensor_task(void *arg)
         status--;
         ESP_LOGI(TAG, "status=%d pwr=%d", status, lora_power_status());
 
+        /* Listen for ACK; also handle re-pairing commands sent to a
+         * paired node ("PAIR <n>&" changes the radio id in place). */
         rx_ctx_t ctx = { .got_ack = false };
-        lora_receive(HE_LORA_RX_WINDOW_MS, on_byte, &ctx);
+        char cmd[HE_LORA_LINE_MAX];
+        int rc = lora_receive_line(HE_LORA_RX_WINDOW_MS, cmd, sizeof(cmd));
+        if (rc > 0) {
+            int new_id = parse_pair(cmd);
+            if (new_id == 0) new_id = parse_repair(cmd, g_node_id);
+            if (new_id > 0 && new_id != g_node_id && node_id_save((uint8_t)new_id)) {
+                char ack[16];
+                snprintf(ack, sizeof(ack), "OK T%02d&", new_id);
+                lora_write((const uint8_t *)ack, strlen(ack));
+                lora_write((const uint8_t *)"\r\n", 2);
+                ESP_LOGI(TAG, "re-paired as T%02d", new_id);
+            } else {
+                /* Not a PAIR command: honour plain ACK bytes ('X'). */
+                for (int k = 0; k < rc; k++)
+                    if (cmd[k] == 'X') { ctx.got_ack = true; break; }
+            }
+        }
         if (ctx.got_ack) {
             status = check_message(status);
         }
@@ -146,11 +261,24 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_task_wdt_init(&wdt));
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
+    /* NVS (paired node id). */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND ||
+        nvs_err == ESP_ERR_NVS_NO_FREE_PAGES) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
+    node_id_load();
+
     /* 1-Wire bus. */
     ow_init(HE_GPIO_ONEWIRE);
 
     /* LoRa radio. */
     lora_init();
+
+    /* Unpaired node: block in the pairing loop until the controller
+     * assigns an id. Sensor task starts only after pairing. */
+    if (g_node_id == 0) pairing_loop();
 
     /* Run the sensor loop on its own task so app_main can return. */
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 5, NULL);

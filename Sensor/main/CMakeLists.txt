@@ -14,4 +14,7 @@ idf_component_register(
         "."
     REQUIRES
         driver
+        nvs_flash
+    PRIV_REQUIRES
+        esp_timer
 )

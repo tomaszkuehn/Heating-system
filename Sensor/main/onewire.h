@@ -57,6 +57,8 @@ void ow_write_bit(bool bit);
 bool ow_read_bit(void);
 void ow_write_byte(uint8_t byte);
 uint8_t ow_read_byte(void);
+void ow_readrom_diag(void);
+void ow_pin_sweep(void);
 
 /* Convenience ROM-level commands (assume single bus master). */
 void ow_skip_rom(void);

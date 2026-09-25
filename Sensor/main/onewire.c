@@ -19,7 +19,9 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "freertos/portmacro.h"
 
 static const char *TAG = "onewire";
@@ -27,7 +29,26 @@ static const char *TAG = "onewire";
 static gpio_num_t s_pin = GPIO_NUM_NC;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 
-/* ---- low-level pin helpers ---- */
+/* Flag-gated write-slot diagnostics: when set, each write-1 slot samples the
+ * line 10 us and 40 us after release so rise-time problems are visible. */
+static bool s_wdiag;
+static uint8_t s_wdiag_a;
+static uint8_t s_wdiag_b;
+
+/* ---- low-level pin helpers ----
+ * Mode-switching scheme (mirrors the Arduino OneWire library, which the
+ * proven sketch used on this exact hardware): drive = OUTPUT with level,
+ * release = INPUT (High-Z, internal pull-up keeps the bus high). */
+static inline void pin_output(void)
+{
+    gpio_set_direction(s_pin, GPIO_MODE_OUTPUT);
+}
+
+static inline void pin_input(void)
+{
+    gpio_set_direction(s_pin, GPIO_MODE_INPUT);
+}
+
 static inline void pin_low(void)
 {
     gpio_set_level(s_pin, 0);
@@ -35,7 +56,6 @@ static inline void pin_low(void)
 
 static inline void pin_high(void)
 {
-    /* Open-drain: write 1 to release the line. */
     gpio_set_level(s_pin, 1);
 }
 
@@ -44,11 +64,12 @@ static inline int pin_read(void)
     return gpio_get_level(s_pin);
 }
 
-/* Precise microsecond delay that does not yield. */
+/* Precise microsecond delay that does not yield. esp_rom_delay_us does a
+ * calibrated busy-wait from ROM (identical to delayMicroseconds on Arduino
+ * ESP32); esp_timer_get_time() spin had jitter from cache misses. */
 static inline void delay_us(uint32_t us)
 {
-    int64_t end = esp_timer_get_time() + us;
-    while (esp_timer_get_time() < end) { /* spin */ }
+    esp_rom_delay_us(us);
 }
 
 void ow_init(gpio_num_t pin)
@@ -74,9 +95,10 @@ bool ow_reset(void)
     bool presence = false;
 
     portENTER_CRITICAL(&s_lock);
+    pin_output();
     pin_low();
     delay_us(480);             /* RESET low pulse (>= 480 us) */
-    pin_high();
+    pin_input();               /* release: High-Z + weak pull-up */
     delay_us(70);              /* slaves pull low within 15..60 us, hold 60..240 us */
     presence = (pin_read() == 0);
     portEXIT_CRITICAL(&s_lock);
@@ -85,22 +107,28 @@ bool ow_reset(void)
     return presence;
 }
 
+/* Slot timing mirrors the proven OneWire (Paul Stoffregen) Arduino library
+ * ESP32 implementation — the old DS18x20_Temperature.ino sketch worked with
+ * it on this very hardware, so it is the reference for these constants. */
 void ow_write_bit(bool bit)
 {
     portENTER_CRITICAL(&s_lock);
+    pin_output();
+    pin_low();
+    delay_us(10);              /* write-1: low 10 us, write-0: low 70 us */
     if (bit) {
-        /* Write-1: pull low <= 15 us, then release for the rest of the slot. */
-        pin_low();
-        delay_us(6);
-        pin_high();
+        pin_input();           /* release early for a 1 */
+        if (s_wdiag) {
+            delay_us(10); s_wdiag_a = (uint8_t)pin_read();
+            delay_us(30); s_wdiag_b = (uint8_t)pin_read();
+        }
         portEXIT_CRITICAL(&s_lock);
-        delay_us(64);          /* rest of the 70 us slot + recovery */
+        delay_us(s_wdiag ? 20 : 60);   /* rest of the 70 us slot + recovery */
     } else {
-        /* Write-0: hold low 60..120 us. */
-        pin_low();
-        delay_us(60);
         portEXIT_CRITICAL(&s_lock);
-        delay_us(10);          /* recovery */
+        delay_us(60);          /* total low 70 us */
+        pin_input();           /* release + recovery */
+        delay_us(10);
     }
 }
 
@@ -109,13 +137,14 @@ bool ow_read_bit(void)
     bool bit;
 
     portENTER_CRITICAL(&s_lock);
+    pin_output();
     pin_low();
-    delay_us(6);               /* master pulls low to start read slot */
-    pin_high();
-    delay_us(9);               /* wait for slave to drive, sample near 15 us */
+    delay_us(2);               /* start read slot */
+    pin_input();               /* release, let the slave drive */
+    delay_us(11);              /* sample at ~13 us, inside the 15 us window */
     bit = (pin_read() != 0);
     portEXIT_CRITICAL(&s_lock);
-    delay_us(55);              /* rest of the 70 us slot + recovery */
+    delay_us(57);              /* rest of the 70 us slot + recovery */
     return bit;
 }
 
@@ -124,6 +153,74 @@ void ow_write_byte(uint8_t byte)
     for (int i = 0; i < 8; i++) {
         ow_write_bit((byte >> i) & 1);   /* LSB first */
     }
+}
+
+/* Run one READ ROM transaction with write-slot rise-time diagnostics.
+ * Logs the command bits as seen on the wire (sampled 10/40 us after release)
+ * and the 8-byte response. Called from ow_search as a wiring probe. */
+void ow_readrom_diag(void)
+{
+    s_wdiag = true;
+    s_wdiag_a = 0; s_wdiag_b = 0;
+    if (!ow_reset()) {
+        ESP_LOGW(TAG, "READROM: no presence");
+        s_wdiag = false;
+        return;
+    }
+    ow_write_byte(0x33);
+    uint8_t cmd_hi10 = s_wdiag_a, cmd_hi40 = s_wdiag_b;
+    uint8_t rr[8];
+    for (int i = 0; i < 8; i++) rr[i] = ow_read_byte();
+    ESP_LOGI(TAG, "READROM: %02x %02x %02x %02x %02x %02x %02x %02x  cmdHi10=%u cmdHi40=%u",
+             rr[0], rr[1], rr[2], rr[3], rr[4], rr[5], rr[6], rr[7], cmd_hi10, cmd_hi40);
+    s_wdiag = false;
+}
+
+/* One-shot diagnostic: pulse a RESET on every plausible free GPIO and report
+ * which pins show a presence-like low. Settles the "is the probe really on
+ * the pin we think?" question in a single boot. Skips radio pins
+ * (12/14/25/26), flash pins (6-11), strapping 0/2 and UART0 1/3. */
+void ow_pin_sweep(void)
+{
+    static const gpio_num_t pins[] = {
+        GPIO_NUM_32, GPIO_NUM_33, GPIO_NUM_27, GPIO_NUM_13,
+        GPIO_NUM_4,  GPIO_NUM_5,  GPIO_NUM_18, GPIO_NUM_19,
+        GPIO_NUM_21, GPIO_NUM_22, GPIO_NUM_23, GPIO_NUM_16, GPIO_NUM_17,
+    };
+    gpio_num_t saved = s_pin;
+    ESP_LOGW(TAG, "SWEEP: probing %d pins for 1-Wire presence...",
+             (int)(sizeof(pins) / sizeof(pins[0])));
+    for (unsigned i = 0; i < sizeof(pins) / sizeof(pins[0]); i++) {
+        s_pin = pins[i];
+        gpio_config_t io = {
+            .pin_bit_mask = (1ULL << pins[i]),
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en   = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type    = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io);
+        vTaskDelay(pdMS_TO_TICKS(2));
+        int p70, p200;
+        portENTER_CRITICAL(&s_lock);
+        pin_output();
+        pin_low();
+        delay_us(480);
+        pin_input();
+        delay_us(70);  p70  = pin_read();
+        delay_us(130); p200 = pin_read();
+        portEXIT_CRITICAL(&s_lock);
+        delay_us(300);
+        if (p70 == 0)
+            ESP_LOGW(TAG, "SWEEP: GPIO%d presence-like low @70us (level@200us=%d)",
+                     pins[i], p200);
+        else
+            ESP_LOGI(TAG, "SWEEP: GPIO%d no presence", pins[i]);
+        gpio_reset_pin(pins[i]);
+    }
+    s_pin = saved;
+    if (saved != GPIO_NUM_NC) ow_init(saved);
+    ESP_LOGW(TAG, "SWEEP: done");
 }
 
 uint8_t ow_read_byte(void)
@@ -177,15 +274,30 @@ int ow_search(ow_rom_t *out, int max)
     uint8_t rom[8] = {0};
     bool last_device = false;
 
+    /* Diagnostics: report whether any slave pulses presence on the bus. */
+    if (!ow_reset()) {
+        ESP_LOGW(TAG, "search: no presence on reset (wiring/pull-up?)");
+        return 0;
+    }
+    /* Read ROM probe: a single device answers 0x33 with its 8-byte ROM.
+     * Logged raw so wiring/timing issues are visible in the console. */
+    vTaskDelay(pdMS_TO_TICKS(5));   /* bus settle between back-to-back resets */
+    ow_readrom_diag();
+    vTaskDelay(pdMS_TO_TICKS(5));
+    last_device = false;
+
     while (!last_device && found < max) {
         if (!ow_reset()) break;
 
         ow_write_byte(OW_CMD_SEARCH_ROM);
 
         int last_zero = 0;
+        int abort_bit = 0;
+        uint8_t dbg[8] = {0};   /* first 8 read-bit pairs for diagnostics */
         for (int bit = 1; bit <= 64; bit++) {
             bool bit_a = ow_read_bit();   /* un-inverted bit */
             bool bit_b = ow_read_bit();   /* complement    */
+            if (bit <= 8) dbg[bit - 1] = (uint8_t)((bit_a ? 2 : 0) | (bit_b ? 1 : 0));
 
             int rom_idx = (bit - 1) / 8;
             int rom_bit = (bit - 1) % 8;
@@ -193,6 +305,7 @@ int ow_search(ow_rom_t *out, int max)
             if (bit_a && bit_b) {
                 /* No device responded — abort. */
                 last_device = true;
+                abort_bit = bit;
                 break;
             }
             if (!bit_a && !bit_b) {
@@ -219,8 +332,16 @@ int ow_search(ow_rom_t *out, int max)
             ow_write_bit((rom[rom_idx] >> rom_bit) & 1);
         }
 
-        if (last_device) break;
+        if (last_device) {
+            ESP_LOGW(TAG, "search: no-response abort at ROM bit %d, first8=%u%u%u%u%u%u%u%u",
+                     abort_bit ? abort_bit : 64,
+                     dbg[0], dbg[1], dbg[2], dbg[3], dbg[4], dbg[5], dbg[6], dbg[7]);
+            break;
+        }
 
+        ESP_LOGI(TAG, "search: rom=%02x%02x%02x%02x%02x%02x%02x crc=%02x (exp %02x)",
+                 rom[0], rom[1], rom[2], rom[3], rom[4], rom[5], rom[6],
+                 ow_crc8(rom, 7), rom[7]);
         /* Validate ROM CRC. */
         if (ow_crc8(rom, 7) == rom[7]) {
             memcpy(out[found].rom, rom, 8);

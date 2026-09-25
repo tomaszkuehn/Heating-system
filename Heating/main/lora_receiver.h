@@ -29,6 +29,19 @@ void lora_receiver_init(void);
  * can exclusively own the UART during an AT-query exchange. */
 void lora_receiver_test_mode(bool on);
 
+/* Latest unpaired-node announcement ("TT.TTT T00&"). temp = announced
+ * temperature (degC), age_s = seconds since the announcement (or -1 when
+ * there is none / it was consumed). */
+void lora_pair_request(float *temp, int *age_s);
+
+/* Broadcast the pairing command "PAIR <id>&" to assign an id to the
+ * unpaired node (id 1..HE_MAX_SENSORS). */
+void lora_pair_assign(int id);
+
+/* Broadcast "REPAIR <old> <new>&" — change the radio id of a defined
+ * sensor (only the node currently holding <old> accepts). */
+void lora_repair_assign(int old, int id);
+
 #ifdef __cplusplus
 }
 #endif

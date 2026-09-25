@@ -1068,6 +1068,87 @@ static esp_err_t h_log_clear(httpd_req_t *req)
     return send_text(req, "ok", 200);
 }
 
+/* ---- /api/lora/pair (GET) — status of unpaired-node announcements ----
+ * The UI polls this to detect a node waiting for an id (frame "T00").
+ * Response: request=true when a fresh announcement exists, temp/age; and
+ * free[] = radio ids not currently sourced by any sensor (candidates). */
+static esp_err_t h_lora_pair_get(httpd_req_t *req)
+{
+    float temp; int age_s;
+    lora_pair_request(&temp, &age_s);
+    char b[320]; int p = 0;
+    bool fresh = (age_s >= 0 && age_s <= 30);
+    p += snprintf(b, sizeof(b),
+        "{\"request\":%s,\"temp\":%.2f,\"age\":%d,\"free\":[",
+        fresh ? "true" : "false", (double)(fresh ? temp : -99.0f),
+        fresh ? age_s : -1);
+    CFG_LOCK();
+    int first = 1;
+    for (int i = 1; i <= HE_MAX_SENSORS; i++) {
+        bool used = false;
+        for (int k = 0; k < s_cfg->sensor_count; k++) {
+            sensor_t *s = &s_cfg->sensors[k];
+            if (s->id == i && s->active && s->rx_count > 0) { used = true; break; }
+        }
+        if (!used) {
+            p += snprintf(b + p, sizeof(b) - p, "%s%d", first ? "" : ",", i);
+            first = 0;
+        }
+    }
+    he_config_unlock();
+    snprintf(b + p, sizeof(b) - p, "]}");
+    return send_json(req, b);
+}
+
+/* ---- /api/lora/pair?id=N (POST) — assign id N to the unpaired node ---- */
+static esp_err_t h_lora_pair_post(httpd_req_t *req)
+{
+    char vs[8];
+    if (!qarg(req, "id", vs, sizeof(vs))) return send_text(req, "missing id", 400);
+    int id = atoi(vs);
+    if (id < 1 || id > HE_MAX_SENSORS) return send_text(req, "id out of range", 400);
+    CFG_LOCK();
+    /* Auto-create missing slots up to id so pairing never requires a
+     * separate "increase count" step. New slots get sane defaults. */
+    if (id > s_cfg->sensor_count) {
+        int prev = s_cfg->sensor_count;
+        s_cfg->sensor_count = id;
+        for (int i = prev; i < id; i++) {
+            sensor_t *s = &s_cfg->sensors[i];
+            memset(s, 0, sizeof(*s));
+            s->id = (uint8_t)(i + 1);
+            snprintf(s->name, sizeof(s->name), "Czujnik LoRa %d", i + 1);
+            s->active = true;
+            s->sim_src = SIM_SRC_REAL;
+            s->quality = QUAL_TIMEOUT;
+        }
+        float wsum = 0;
+        for (int i = 0; i < s_cfg->sensor_count; i++) wsum += s_cfg->sensors[i].weight;
+        if (wsum > 0) for (int i = 0; i < s_cfg->sensor_count; i++) s_cfg->sensors[i].weight /= wsum;
+        sensor_manager_bind(s_cfg->sensors, s_cfg->sensor_count,
+                            s_cfg->has_external ? &s_cfg->sensors[HE_MAX_SENSORS] : NULL);
+        storage_save_config(s_cfg);
+    }
+    he_config_unlock();
+    /* UART broadcast sleeps — must run outside the config lock. */
+    lora_pair_assign(id);
+    return send_text(req, "ok", 200);
+}
+
+/* ---- /api/lora/repair?from=N&to=M (POST) — change a defined sensor's
+ * radio id. Only the node currently paired as N accepts the command. ---- */
+static esp_err_t h_lora_repair_post(httpd_req_t *req)
+{
+    char fs_[8], ts[8];
+    if (!qarg(req, "from", fs_, sizeof(fs_)) || !qarg(req, "to", ts, sizeof(ts)))
+        return send_text(req, "missing from/to", 400);
+    int from = atoi(fs_), to = atoi(ts);
+    if (from < 1 || from > HE_MAX_SENSORS || to < 1 || to > HE_MAX_SENSORS || from == to)
+        return send_text(req, "bad from/to", 400);
+    lora_repair_assign(from, to);
+    return send_text(req, "ok", 200);
+}
+
 /* ---- /api/lora/test — E32 module communication check ----
  * Per the E32-433T20D datasheet (mode 3, M0=M1=1, 9600 8N1): three C1 bytes
  * read the module's saved parameters; it answers C0 + 5 bytes. The lora_rx
@@ -1276,6 +1357,9 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_log_clear,  .user_ctx = NULL },
     { .uri = "/api/diagnostics", .method = HTTP_GET,  .handler = h_diag,      .user_ctx = NULL },
     { .uri = "/api/lora/test",   .method = HTTP_GET,  .handler = h_lora_test, .user_ctx = NULL },
+    { .uri = "/api/lora/pair",   .method = HTTP_GET,  .handler = h_lora_pair_get,  .user_ctx = NULL },
+    { .uri = "/api/lora/pair",   .method = HTTP_POST, .handler = h_lora_pair_post, .user_ctx = NULL },
+    { .uri = "/api/lora/repair", .method = HTTP_POST, .handler = h_lora_repair_post, .user_ctx = NULL },
     { .uri = "/api/ota",       .method = HTTP_POST, .handler = h_ota,         .user_ctx = NULL },
 };
 
