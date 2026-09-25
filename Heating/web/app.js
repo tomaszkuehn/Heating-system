@@ -433,49 +433,45 @@ async function pollPair() {
 
 /* Re-render the currently open modal's list from the latest pairState
  * without resetting scroll position or closing it (live background scan).
- * ALL detected devices are selectable: an unpaired node (T00) gets a fresh
- * id assigned over the air; an already-paired node is adopted into the
- * system with its EXISTING radio id (node unchanged). */
+ * Concept: nodes ship FACTORY-PAIRED TO 0 (T00). Only T00 devices are
+ * pairable — pairing assigns a fresh free id over the air. Nodes already
+ * holding an id (T1..T6) are listed read-only (they belong to a sensor
+ * or must be unpaired/repaired first). */
 function refreshPairModalList() {
   if ($('pairModal').classList.contains('hidden')) return;
   const nodes = (pairState && pairState.nodes) ? pairState.nodes : [];
   const free = (pairState && pairState.free) ? pairState.free : [];
   const list = $('pairModalList');
-  const prevSel = document.querySelector('input[name="pairIdOpt"]:checked');
-  const prevSelVal = prevSel ? prevSel.value : null;
-  list.innerHTML = nodes.length
-    ? nodes.map(nd => {
-        const id = nd.id;
-        const temp = nd.temp > -50 ? nd.temp.toFixed(1) + ' °C' : '';
-        const age = nd.age >= 0 ? nd.age + ' s temu' : '';
-        const unpaired = id === 0;                 /* T00: id gets assigned */
-        const adopted = !unpaired && free.indexOf(id) < 0;  /* paired, no slot */
-        const kind = unpaired ? 'niesparowany — przydziel ID'
-                   : adopted ? 'sparowany — dodaj z ID ' + id
-                   : 'sparowany (aktywny czujnik)';
-        const selectable = unpaired || adopted;
-        const checked = (prevSelVal !== null && +prevSelVal === id) ? 'checked' : '';
-        return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:${selectable ? 'pointer' : 'not-allowed'};opacity:${selectable ? 1 : 0.5}">
-          <input type="radio" name="pairIdOpt" value="${id}" ${selectable ? '' : 'disabled'} ${checked}>
-          <span style="font-weight:700">${unpaired ? 'Nowy węzeł (T00)' : 'ID ' + id}</span>
+  const t00 = nodes.find(nd => nd.id === 0);
+  list.innerHTML = t00
+    ? (() => {
+        const temp = t00.temp > -50 ? t00.temp.toFixed(1) + ' °C' : '';
+        const age = t00.age >= 0 ? t00.age + ' s temu' : '';
+        return `<label class="pair-opt" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;cursor:pointer">
+          <input type="radio" name="pairIdOpt" value="0" checked>
+          <span style="font-weight:700">Nowy węzeł (T00)</span>
           <span style="color:var(--muted);font-size:12px">${temp} · ${age}</span>
-          <span style="color:var(--muted);font-size:11px">${kind}</span>
         </label>`;
-      }).join('')
-    : '<div style="color:var(--muted);padding:8px">Skanowanie… Brak wykrytych urządzeń LoRa. Włącz nowy węzeł — okno odświeża się automatycznie.</div>';
-  const selectable = nodes.some(nd => nd.id === 0 || free.indexOf(nd.id) >= 0);
-  $('pairModalReq').textContent = nodes.length
-    ? `Wykryto ${nodes.length} ${nodes.length === 1 ? 'urządzenie' : 'urządzeń'} LoRa. Nowy węzeł (T00) dostanie wolne ID; sparowany węzeł zostanie dodany z obecnym ID.`
-    : 'Skanowanie radia w tle — włącz nowy węzeł i poczekaj na ogłoszenie (T00).';
-  $('btnPairAssign').disabled = !selectable;
+      })()
+    : (nodes.length
+        ? '<div style="color:var(--muted);padding:8px">Wykryto tylko sparowane węzły — do parowania węzeł musi mieć ID fabryczne (T00). Zresetuj węzeł (przytrzymaj EN 5 s) aby przywrócić ID 0.</div>'
+        : '<div style="color:var(--muted);padding:8px">Skanowanie… Brak wykrytych urządzeń LoRa. Włącz nowy węzeł — okno odświeża się automatycznie.</div>');
+  const canPair = !!t00 && free.length > 0;
+  $('pairModalReq').textContent = t00
+    ? (free.length
+        ? `Wykryto niesparowany węzeł (T00). Wybierz ID do nadania:`
+        : 'Węzeł T00 wykryty, ale brak wolnych ID — usuń czujkę, aby zwolnić ID.')
+    : (nodes.length
+        ? 'Parować można tylko węzły z ID fabrycznym (T00).'
+        : 'Skanowanie radia w tle — włącz nowy węzeł i poczekaj na ogłoszenie (T00).');
+  $('btnPairAssign').disabled = !canPair;
   /* Free-id dropdown for assigning a fresh id to an unpaired (T00) node. */
-  const hasT00 = nodes.some(nd => nd.id === 0);
   const reqEl = $('pairModalReq');
   const prevPick = $('pairNewIdSel') ? $('pairNewIdSel').value : null;
-  if (hasT00 && free.length) {
+  if (t00 && free.length) {
     if (!$('pairNewIdSel')) {
       const selp = document.createElement('span');
-      selp.innerHTML = ` <label style="font-size:12px">ID dla T00: <select id="pairNewIdSel" style="padding:2px 6px">${free.map(f => `<option value="${f}" ${prevPick && +prevPick === f ? 'selected' : ''}>${f}</option>`).join('')}</select></label>`;
+      selp.innerHTML = ` <label style="font-size:12px">ID: <select id="pairNewIdSel" style="padding:2px 6px">${free.map(f => `<option value="${f}" ${prevPick && +prevPick === f ? 'selected' : ''}>${f}</option>`).join('')}</select></label>`;
       reqEl.appendChild(selp);
     }
   } else {
@@ -501,18 +497,15 @@ function openPairModal() {
   refreshPairModalList();
   /* Reset to the add-flow handler (repair flow overrides it). */
   $('btnPairAssign').onclick = async () => {
-    const sel = document.querySelector('input[name="pairIdOpt"]:checked');
-    if (!sel) return;
-    const dev = +sel.value;   /* 0 = unpaired node, >0 = paired node's id */
-    let rid = dev;
-    if (dev === 0) {
-      /* Unpaired node: pick a free radio id from the small dropdown. */
-      const pick = document.querySelector('#pairNewIdSel');
-      if (!pick || !pick.value) return;
-      rid = +pick.value;
-    }
+    const pick = $('pairNewIdSel');
+    if (!pick || !pick.value) return;
+    const rid = +pick.value;
     const r = await fetch('/api/lora/pair?id=' + rid, { method: 'POST' });
-    if (r.ok) { closePairModal(); await refresh(); }
+    if (r.ok) {
+      closePairModal();
+      startUnpairWatch(rid);   /* same watcher: expects T<rid> announcement */
+      await refresh();
+    }
   };
   m.classList.remove('hidden');
   startPairModalTimer();
@@ -525,10 +518,16 @@ function closePairModal() { stopPairModalTimer(); $('pairModal').classList.add('
  * "confirmed" the factory reset succeeded; on "failed" the user is told
  * the node kept its id and may force-delete without resetting. */
 let unpairWatchTimer = null;
-function startUnpairWatch(radioId) {
+/* Generic PAIR/RESET verification watch: polls /api/lora/unpair/status
+ * while the broadcast verification is in flight. mode 'pair' expects the
+ * node to announce T<radioId>; mode 'unpair' expects T00. On failure the
+ * user gets a message (pairing) or a force-delete fallback (unpair). */
+function startUnpairWatch(radioId, mode = 'unpair') {
   stopUnpairWatch();
   const banner = $('pairBanner'), info = $('pairInfo');
-  info.textContent = `Usuwanie czujki (radio ${radioId}): czekam na potwierdzenie resetu węzła…`;
+  info.textContent = mode === 'pair'
+    ? `Parowanie węzła na ID ${radioId}: czekam na potwierdzenie (ogłoszenie T${radioId})…`
+    : `Usuwanie czujki (radio ${radioId}): czekam na potwierdzenie resetu węzła…`;
   banner.classList.remove('hidden');
   unpairWatchTimer = setInterval(async () => {
     const st = await api('/api/lora/unpair/status');
@@ -536,7 +535,11 @@ function startUnpairWatch(radioId) {
     if (st.state === 'pending') return;                      /* keep waiting */
     stopUnpairWatch();
     if (st.state === 'confirmed') {
-      info.textContent = `Czujka radio ${radioId} usunięta — węzeł potwierdził powrót do ustawień fabrycznych.`;
+      info.textContent = mode === 'pair'
+        ? `Węzeł sparowany jako ID ${radioId} — potwierdzono.`
+        : `Czujka radio ${radioId} usunięta — węzeł potwierdził powrót do ID fabrycznego (0).`;
+    } else if (mode === 'pair') {
+      info.textContent = `Parowanie na ID ${radioId} NIE zostało potwierdzone — węzeł poza zasięgiem lub zajęty. Spróbuj ponownie.`;
     } else {
       info.textContent = `Czujka radio ${radioId} usunięta z systemu, ale reset węzła NIE został potwierdzony (węzeł poza zasięgiem lub wyłączony). Węzeł zachował swoje ID.`;
       /* Offer the force-delete fallback. */

@@ -54,24 +54,24 @@ void lora_repair_assign(int old, int id) { pair_broadcast("REPAIR %d %d&", old, 
  * persisted radio id and reboots into the factory-default unpaired mode. */
 void lora_unpair_reset(void) { pair_broadcast("RESET&", 0, 0); }
 
-/* ---- Unpair verification (async) ----
- * After a RESET& broadcast the node should reboot into unpaired mode and
- * announce itself with "TT.TTT T00&". The web layer arms a verification
- * window of HE_UNPAIR_VERIFY_CYCLES node cycles (~3 × 6 s); the scanner
- * below watches the T00 arrival. Results surface through
- * lora_unpair_status(): PENDING -> (CONFIRMED | FAILED | TIMEOUT). */
+/* ---- Pairing/unpair verification (async) ----
+ * After a PAIR/RESET broadcast arm a verification window (~3 node cycles).
+ * The scanner watches the addressed node's fresh announcements:
+ *   - pair:   expect "T<rid>"  (node accepted the assignment)
+ *   - unpair: expect "T00"     (node back to factory default)
+ * Results surface through lora_unpair_verify_state(). */
 #define HE_UNPAIR_VERIFY_CYCLES 3
 
 typedef enum {
     UNPAIR_IDLE = 0,
-    UNPAIR_PENDING,     /* broadcast done, waiting for the node's T00 */
-    UNPAIR_CONFIRMED,   /* node announced T00 after the reset         */
-    UNPAIR_FAILED,      /* window elapsed, node kept announcing its id */
+    UNPAIR_PENDING,     /* broadcast done, waiting for the node's answer */
+    UNPAIR_CONFIRMED,   /* expected announcement seen                    */
+    UNPAIR_FAILED,      /* window elapsed, expected announcement absent  */
 } unpair_state_t;
 
 typedef struct {
     unpair_state_t state;
-    int      radio_id;        /* id we asked to erase */
+    int      expect_id;       /* radio id expected after the command (0 for unpair) */
     int64_t  deadline_us;     /* verification window end */
 } unpair_verify_t;
 
@@ -85,20 +85,16 @@ static void unpair_verify_note(int id)
         s_unpair.state = UNPAIR_FAILED;
         return;
     }
-    if (id == 0) {
-        /* The node we reset now announces unpaired -> factory default kept. */
-        if (s_pair_nodes[0].age_s == 0)
-            s_unpair.state = UNPAIR_CONFIRMED;
-    } else if (id == s_unpair.radio_id && s_pair_nodes[id].age_s == 0) {
-        /* Still announcing its old id within the window -> keep waiting; the
-         * timeout will fire if it never stops. */
-    }
+    if (id == s_unpair.expect_id)
+        s_unpair.state = UNPAIR_CONFIRMED;
 }
 
+/* Arm the verification window. expect_id = the radio id the node should
+ * announce after the broadcast (0 = unpaired/reset case). */
 void lora_unpair_verify_start(int radio_id, int window_s)
 {
     s_unpair.state       = UNPAIR_PENDING;
-    s_unpair.radio_id    = radio_id;
+    s_unpair.expect_id   = radio_id;
     s_unpair.deadline_us = esp_timer_get_time() + (int64_t)window_s * 1000000;
 }
 

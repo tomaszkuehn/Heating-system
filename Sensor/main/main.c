@@ -268,8 +268,10 @@ static void sensor_task(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(200));
                 esp_restart();
             }
-            int new_id = parse_pair(cmd);
-            if (new_id == 0) new_id = parse_repair(cmd, g_node_id);
+            /* A paired node keeps its id: only a REPAIR addressed to it may
+             * change it. Plain "PAIR <n>" is for unpaired (T00) nodes only
+             * and is ignored here. */
+            int new_id = parse_repair(cmd, g_node_id);
             if (new_id > 0 && new_id != g_node_id && node_id_save((uint8_t)new_id)) {
                 char ack[16];
                 snprintf(ack, sizeof(ack), "OK T%02d&", new_id);

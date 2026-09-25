@@ -1112,43 +1112,41 @@ static esp_err_t h_lora_pair_get(httpd_req_t *req)
     return send_json(req, b);
 }
 
-/* ---- /api/lora/pair?id=N (POST) — assign id N to the unpaired node ---- */
+/* ---- /api/lora/pair?id=N (POST) — assign radio id N to the unpaired node ----
+ * Concept: every node ships FACTORY-PAIRED TO 0 (T00 announcements). Pairing
+ * broadcasts "PAIR N&" which only a T00 node accepts; it then stores N in
+ * its NVS and starts announcing Tn. Unpair broadcasts "RESET&" -> back to 0.
+ * Only T00 nodes are pairable — a node already holding an id must go through
+ * repair or unpair first. */
 static esp_err_t h_lora_pair_post(httpd_req_t *req)
 {
     char vs[8];
     if (!qarg(req, "id", vs, sizeof(vs))) return send_text(req, "missing id", 400);
     int rid = atoi(vs);
     if (rid < 1 || rid > HE_MAX_SENSORS) return send_text(req, "id out of range", 400);
+    /* Refuse pairing a radio id another sensor already claims. */
     CFG_LOCK();
-    /* Pair the unpaired node (radio id N) with a sensor slot. The sensor's
-     * LOGICAL id is independent of the radio id: reuse the first slot that
-     * has no radio_id yet; only grow the table when none is free. */
-    sensor_t *target = NULL;
-    int target_idx = -1;
     for (int i = 0; i < s_cfg->sensor_count; i++) {
-        if (s_cfg->sensors[i].radio_id == rid) {   /* already paired to N */
+        if (s_cfg->sensors[i].radio_id == rid)
+            CFG_RET(send_text(req, "radio id already in use", 400));
+    }
+    /* Pair with the first sensor slot that has no radio yet; grow only when
+     * the table has no free slot (wired sensors may hold radio_id 0). */
+    sensor_t *target = NULL;
+    for (int i = 0; i < s_cfg->sensor_count; i++) {
+        if (s_cfg->sensors[i].radio_id == 0 && s_cfg->sensors[i].id != 0) {
             target = &s_cfg->sensors[i];
-            target_idx = i;
             break;
         }
     }
-    if (!target) {
-        for (int i = 0; i < s_cfg->sensor_count; i++) {
-            if (s_cfg->sensors[i].radio_id == 0) { /* wired/free slot */
-                target = &s_cfg->sensors[i];
-                target_idx = i;
-                break;
-            }
-        }
-        if (!target && s_cfg->sensor_count < HE_MAX_SENSORS) {
-            target_idx = s_cfg->sensor_count++;
-            target = &s_cfg->sensors[target_idx];
-            memset(target, 0, sizeof(*target));
-            snprintf(target->name, sizeof(target->name), "Czujnik LoRa %d", rid);
-            target->active = true;
-            target->sim_src = SIM_SRC_REAL;
-            target->quality = QUAL_TIMEOUT;
-        }
+    if (!target && s_cfg->sensor_count < HE_MAX_SENSORS) {
+        target = &s_cfg->sensors[s_cfg->sensor_count++];
+        memset(target, 0, sizeof(*target));
+        target->id = (uint8_t)s_cfg->sensor_count;
+        snprintf(target->name, sizeof(target->name), "Czujnik LoRa %d", s_cfg->sensor_count);
+        target->active = true;
+        target->sim_src = SIM_SRC_REAL;
+        target->quality = QUAL_TIMEOUT;
     }
     if (target) {
         target->radio_id = (uint8_t)rid;
@@ -1163,6 +1161,8 @@ static esp_err_t h_lora_pair_post(httpd_req_t *req)
     if (!target) return send_text(req, "no free sensor slot", 400);
     /* UART broadcast sleeps — must run outside the config lock. */
     lora_pair_assign(rid);
+    /* Background verification: the node should come back announcing T<rid>. */
+    lora_unpair_verify_start(rid, HE_UNPAIR_VERIFY_SEC);
     return send_text(req, "ok", 200);
 }
 

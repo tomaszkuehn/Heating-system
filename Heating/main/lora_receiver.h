@@ -61,13 +61,14 @@ void lora_repair_assign(int old, int id);
  * and reboot unpaired (factory default). Used when deleting a sensor. */
 void lora_unpair_reset(void);
 
-/* ---- Unpair verification (async, non-blocking) ----
- * After the RESET& broadcast arm a verification window of
+/* ---- Pairing/unpair verification (async, non-blocking) ----
+ * After a PAIR/RESET broadcast arm a verification window of
  * HE_UNPAIR_VERIFY_CYCLES node cycles. The scanner watches whether the
- * node comes back announcing "T00" (factory default kept) or keeps its
- * old id (reset failed — the UI then offers a force delete). */
-void lora_unpair_verify_start(int radio_id, int window_s);
-/* 0 = idle, 1 = pending, 2 = confirmed (T00 seen), 3 = failed. */
+ * node starts announcing the expected id (expect 0 = unpaired after
+ * RESET; expect N after PAIR N). If the window elapses without seeing
+ * it, the command failed — the UI then offers a force-delete fallback. */
+void lora_unpair_verify_start(int expect_id, int window_s);
+/* 0 = idle, 1 = pending, 2 = confirmed (expected id seen), 3 = failed. */
 int  lora_unpair_verify_state(void);
 void lora_unpair_verify_clear(void);
 
