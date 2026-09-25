@@ -20,13 +20,17 @@ extern "C" {
 /* ---- 1-Wire bus ---- */
 #define HE_GPIO_ONEWIRE        GPIO_NUM_32   /* DS18B20 data line        */
 
-/* ---- Factory-reset button (EN / BOOT strap pin GPIO0) ----
- * Holding it for at least HE_RESET_HOLD_SEC seconds arms the reset: the
- * on-board LED lights up as the confirmation hint; the id is erased and
- * the node reboots (unpaired, T00) AFTER the button is released. */
-#define HE_GPIO_RESET_BTN      GPIO_NUM_0
+/* ---- Factory-reset button (BOOT, strap pin GPIO0) ----
+ * Hold BOOT for at least HE_RESET_HOLD_SEC seconds: when the threshold is
+ * reached the on-board LED lights up (confirmation hint); the paired id is
+ * erased and the node reboots unpaired (T00) AFTER the button is released.
+ *
+ * NOTE: the EN button is hard-wired to the ESP32 CHIP_PU (chip reset) pin,
+ * not to a GPIO, so firmware cannot measure how long EN is held. The timed
+ * factory reset therefore uses BOOT. */
+#define HE_GPIO_RESET_BTN      GPIO_NUM_0     /* BOOT */
 #define HE_RESET_HOLD_SEC      5
-/* On-board LED (devkit): lights on RESET threshold reached. */
+/* On-board LED (devkit): lights when the hold threshold is reached. */
 #define HE_GPIO_RESET_LED      GPIO_NUM_2
 
 /* ---- LoRa radio (UART) ---- */
