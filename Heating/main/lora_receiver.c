@@ -2,9 +2,11 @@
 #include "app_config.h"
 #include "sensor_manager.h"
 #include "data_model.h"
+#include "storage_manager.h"
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -114,6 +116,9 @@ static void pair_broadcast(const char *fmt, int a, int b)
 {
     char cmd[24];
     snprintf(cmd, sizeof(cmd), fmt, a, b);
+    char ev[40];
+    snprintf(ev, sizeof(ev), "lora tx: %s", cmd);
+    storage_log_event(FAULT_NONE, 0, ev);
     /* The node listens for pairing/repair commands only inside its ~5 s ACK
      * window once per ~7 s cycle. Broadcast long enough to cover one full
      * node cycle so the command is guaranteed to land inside a window. */
@@ -172,6 +177,9 @@ static bool parse_line(const char *line, int *out_id, float *out_temp)
 
 static void process_line(const char *line)
 {
+    char ev[40];
+    snprintf(ev, sizeof(ev), "lora rx: %s", line);
+    storage_log_event(FAULT_NONE, 0, ev);
     ESP_LOGI(TAG, "rx frame: \"%s\"", line);
     int id;
     float temp;
@@ -226,6 +234,8 @@ static void process_line(const char *line)
      * watchdog. The node expects the single byte 'X' as confirmation. */
     static const uint8_t ack = 'X';
     uart_write_bytes(HE_LORA_UART, &ack, 1);
+    snprintf(ev, sizeof(ev), "lora tx: X -> T%d", id);
+    storage_log_event(FAULT_NONE, 0, ev);
     ESP_LOGI(TAG, "tx ack: 'X' -> T%d", id);
 }
 
