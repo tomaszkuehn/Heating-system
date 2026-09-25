@@ -84,12 +84,16 @@ static void led_init(void)
     gpio_set_level(HE_GPIO_RESET_LED, 0);
 }
 
-/* ---- Factory reset: hold BOOT (GPIO0) for >=5 s ----
- * Reaching the threshold lights the on-board LED (GPIO2) as a visible
- * "reset armed" hint; the id is erased and the node reboots AFTER the
- * button is released (so the user sees the LED before the reboot). */
-static void factory_reset_check(void)
+static void node_id_erase(void);   /* defined below */
+
+/* ---- Factory reset, always-on: hold BOOT (GPIO0) for >=5 s ----
+ * Runs as its own task so it works in every state (unpaired pairing_loop,
+ * paired sensor_task, even while blocked in a LoRa receive window).
+ * On reaching the threshold the on-board LED (GPIO2) lights up and the
+ * paired id is erased; the node then reboots (id 0 / T00) on release. */
+static void reset_button_task(void *arg)
 {
+    esp_task_wdt_add(NULL);
     gpio_config_t in = {
         .pin_bit_mask = 1ULL << HE_GPIO_RESET_BTN,
         .mode = GPIO_MODE_INPUT,
@@ -99,36 +103,30 @@ static void factory_reset_check(void)
     };
     gpio_config(&in);
 
-    int held = 0;
+    int held_ms = 0;
     bool armed = false;
     for (;;) {
+        esp_task_wdt_reset();
         if (gpio_get_level(HE_GPIO_RESET_BTN) != 0) {
             /* Released. */
             if (armed) {
-                /* Threshold was reached while held: erase + reboot now. */
-                ESP_LOGW(TAG, "button held %d s — factory reset (erasing node_id)", held);
-                nvs_handle_t h;
-                if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
-                    nvs_erase_key(h, "node_id");
-                    nvs_commit(h);
-                    nvs_close(h);
-                }
-                gpio_set_level(HE_GPIO_RESET_LED, 0);   /* LED off */
-                vTaskDelay(pdMS_TO_TICKS(200));         /* let logs flush */
+                ESP_LOGW(TAG, "BOOT released — restarting with id 0");
+                gpio_set_level(HE_GPIO_RESET_LED, 0);
+                vTaskDelay(pdMS_TO_TICKS(200));
                 esp_restart();
             }
-            return;
+            held_ms = 0;
+        } else {
+            held_ms += 50;
+            if (!armed && held_ms >= HE_RESET_HOLD_SEC * 1000) {
+                ESP_LOGW(TAG, "BOOT held %d s — factory reset (erasing id)",
+                         HE_RESET_HOLD_SEC);
+                node_id_erase();
+                gpio_set_level(HE_GPIO_RESET_LED, 1);
+                armed = true;
+            }
         }
-        /* Still held. */
-        held++;
-        if (held >= HE_RESET_HOLD_SEC && !armed) {
-            /* Light the LED: reset armed, keep watching until release. */
-            gpio_set_level(HE_GPIO_RESET_LED, 1);
-            ESP_LOGW(TAG, "reset armed (LED on) — release BOOT to apply");
-            armed = true;
-        }
-        esp_task_wdt_reset();   /* holding the button may take long */
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
@@ -168,13 +166,10 @@ static void node_id_erase(void)
 /* Unpaired mode: announce with T00 frames, wait for PAIR assignment. */
 static void pairing_loop(void)
 {
+    esp_task_wdt_add(NULL);
     char line[HE_LORA_LINE_MAX];
     for (;;) {
         esp_task_wdt_reset();
-
-        /* Factory reset works while unpaired too: BOOT held >=5 s lights the
-         * LED, release erases the id (no-op) and reboots. */
-        factory_reset_check();
 
         if (g_probe_count == 0)
             g_probe_count = ds18b20_enumerate(g_probes, HE_MAX_SENSORS);
@@ -272,6 +267,7 @@ static void send_temperature_frame(void)
 static void sensor_task(void *arg)
 {
     static int status = HE_STATUS_OK;
+    esp_task_wdt_add(NULL);
 
     for (;;) {
         esp_task_wdt_reset();
@@ -333,9 +329,6 @@ static void sensor_task(void *arg)
             esp_restart();
         }
 
-        /* Factory reset check: EN/BOOT held for >5 s erases the id. */
-        factory_reset_check();
-
         /* Period between cycles. */
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -347,15 +340,16 @@ void app_main(void)
     ESP_LOGI(TAG, "DS18x20 sensor node starting (boot %llu ms)",
              (unsigned long long)(esp_timer_get_time() / 1000));
 
-    /* Watchdog. */
+    /* Watchdog. Only the worker tasks that actually do work subscribe
+     * themselves (esp_task_wdt_add(NULL)); idle cores are NOT watched, so a
+     * busy LoRa receive window can never trip a false reset. */
     esp_task_wdt_deinit();
     esp_task_wdt_config_t wdt = {
         .timeout_ms     = HE_WDT_TIMEOUT_SEC * 1000,
-        .idle_core_mask  = (1 << portNUM_PROCESSORS) - 1,
-        .trigger_panic   = true,
+        .idle_core_mask = 0,
+        .trigger_panic  = true,
     };
     ESP_ERROR_CHECK(esp_task_wdt_init(&wdt));
-    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
     /* NVS (paired node id). */
     esp_err_t nvs_err = nvs_flash_init();
@@ -375,9 +369,9 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 
-    /* Factory reset: BOOT (GPIO0) held for >5 s lights the LED, then erases
-     * the id on release and reboots unpaired. */
-    factory_reset_check();
+    /* Always-on factory reset: BOOT held >=5 s erases the id + lights the
+     * LED, release reboots into T00. Independent of pairing/LoRa state. */
+    xTaskCreate(reset_button_task, "reset_btn", 3072, NULL, 6, NULL);
 
     /* 1-Wire bus. */
     ow_init(HE_GPIO_ONEWIRE);

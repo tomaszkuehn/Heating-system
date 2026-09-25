@@ -6,3 +6,6 @@
 - [2026-09-24T15:53:58.510Z] **observation** [lora, e32, api, test-endpoint, wiring-debug]: /api/lora/test added; E32 silent — check wiring/variant
 - [2026-09-24T17:10:07.536Z] **observation** [ota, rollback, httpd, ethernet, lora, troubleshooting]: OTA interrupted by bad cable; httpd jam; rollback OK
 - [2026-09-24T17:13:14.581Z] **observation** [gpio, lora, audit, uart2, strapping]: GPIO audit OK: outputs configured, UART pins valid
+- [2026-09-24T17:28:26.508Z] **decision** [git, restructure, submodule, commit, push]: Single repo restructure: submodule dropped, commit 20c5dc2 pushed
+- [2026-09-24T20:19:27.060Z] **decision** [lora, security, design, deferred, v2]: LoRa v2 designed, NOT implemented yet (user deferred)
+- [2026-09-24T20:37:23.700Z] **observation** [sensor, averaging, health, loss, lora, ota]: 8-sample avg + loss-based health deployed, STALE bug fixed

@@ -118,6 +118,7 @@ static void pair_broadcast(const char *fmt, int a, int b)
      * window once per ~7 s cycle. Broadcast long enough to cover one full
      * node cycle so the command is guaranteed to land inside a window. */
     for (int i = 0; i < 30; i++) {
+        ESP_LOGI(TAG, "tx frame: \"%s\" (%d/30)", cmd, i + 1);
         uart_write_bytes(HE_LORA_UART, cmd, strlen(cmd));
         uart_write_bytes(HE_LORA_UART, "\r\n", 2);
         vTaskDelay(pdMS_TO_TICKS(200));
@@ -171,6 +172,7 @@ static bool parse_line(const char *line, int *out_id, float *out_temp)
 
 static void process_line(const char *line)
 {
+    ESP_LOGI(TAG, "rx frame: \"%s\"", line);
     int id;
     float temp;
     if (!parse_line(line, &id, &temp)) {
@@ -224,6 +226,7 @@ static void process_line(const char *line)
      * watchdog. The node expects the single byte 'X' as confirmation. */
     static const uint8_t ack = 'X';
     uart_write_bytes(HE_LORA_UART, &ack, 1);
+    ESP_LOGI(TAG, "tx ack: 'X' -> T%d", id);
 }
 
 static void lora_rx_task(void *arg)

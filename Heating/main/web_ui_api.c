@@ -1142,8 +1142,15 @@ static esp_err_t h_lora_pair_post(httpd_req_t *req)
     if (!target && s_cfg->sensor_count < HE_MAX_SENSORS) {
         target = &s_cfg->sensors[s_cfg->sensor_count++];
         memset(target, 0, sizeof(*target));
-        target->id = (uint8_t)s_cfg->sensor_count;
-        snprintf(target->name, sizeof(target->name), "Czujnik LoRa %d", s_cfg->sensor_count);
+        /* Assign the lowest logical id not already used — sensor_count is not
+         * safe here because deletions leave gaps / out-of-order ids. */
+        for (int cand = 1; cand <= HE_MAX_SENSORS; cand++) {
+            bool used = false;
+            for (int k = 0; k < s_cfg->sensor_count; k++)
+                if (s_cfg->sensors[k].id == cand) { used = true; break; }
+            if (!used) { target->id = (uint8_t)cand; break; }
+        }
+        snprintf(target->name, sizeof(target->name), "Czujnik LoRa %d", target->id);
         target->active = true;
         target->sim_src = SIM_SRC_REAL;
         target->quality = QUAL_TIMEOUT;
@@ -1301,6 +1308,7 @@ static esp_err_t h_lora_test(httpd_req_t *req)
     /* Flush stale RX bytes, send the read-parameters command. */
     uart_flush_input(HE_LORA_UART);
     const uint8_t cmd[3] = { 0xC1, 0xC1, 0xC1 };
+    ESP_LOGI("lora", "tx frame: C1 C1 C1 (module param probe)");
     uart_write_bytes(HE_LORA_UART, cmd, sizeof(cmd));
     vTaskDelay(pdMS_TO_TICKS(300));
 
