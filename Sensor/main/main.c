@@ -72,36 +72,58 @@ static int parse_pair(const char *line)
 }
 
 /* ---- Factory reset: hold the EN/BOOT button (GPIO0) for >5 s ----
- * Erases "node_id" from NVS and reboots; the node comes back unpaired
- * (T00 announcements) ready for a fresh pairing. */
+ * Reaching the threshold lights the on-board LED (GPIO2) as a visible
+ * "reset armed" hint; the id is erased and the node reboots AFTER the
+ * button is released (so the user sees the LED before the reboot). */
 static void factory_reset_check(void)
 {
-    gpio_config_t io = {
+    gpio_config_t in = {
         .pin_bit_mask = 1ULL << HE_GPIO_RESET_BTN,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
-    gpio_config(&io);
+    gpio_config(&in);
 
     int held = 0;
+    bool armed = false;
     for (;;) {
-        if (gpio_get_level(HE_GPIO_RESET_BTN) != 0) return;   /* released */
+        if (gpio_get_level(HE_GPIO_RESET_BTN) != 0) {
+            /* Released. */
+            if (armed) {
+                /* Threshold was reached while held: erase + reboot now. */
+                ESP_LOGW(TAG, "button held %d s — factory reset (erasing node_id)", held);
+                nvs_handle_t h;
+                if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
+                    nvs_erase_key(h, "node_id");
+                    nvs_commit(h);
+                    nvs_close(h);
+                }
+                gpio_set_level(HE_GPIO_RESET_LED, 0);   /* LED off */
+                vTaskDelay(pdMS_TO_TICKS(200));         /* let logs flush */
+                esp_restart();
+            }
+            return;
+        }
+        /* Still held. */
         held++;
-        if (held >= HE_RESET_HOLD_SEC) break;
+        if (held >= HE_RESET_HOLD_SEC && !armed) {
+            /* Light the LED: reset armed, keep watching until release. */
+            gpio_config_t led = {
+                .pin_bit_mask = 1ULL << HE_GPIO_RESET_LED,
+                .mode = GPIO_MODE_OUTPUT,
+                .pull_up_en   = GPIO_PULLUP_DISABLE,
+                .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                .intr_type    = GPIO_INTR_DISABLE,
+            };
+            gpio_config(&led);
+            gpio_set_level(HE_GPIO_RESET_LED, 1);
+            ESP_LOGW(TAG, "reset armed (LED on) — release EN to apply");
+            armed = true;
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-
-    ESP_LOGW(TAG, "button held %d s — factory reset (erasing node_id)", held);
-    nvs_handle_t h;
-    if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
-        nvs_erase_key(h, "node_id");
-        nvs_commit(h);
-        nvs_close(h);
-    }
-    vTaskDelay(pdMS_TO_TICKS(200));   /* let logs flush */
-    esp_restart();
 }
 
 /* Parse "REPAIR <old> <new>" (controller -> node): addressed re-pairing.

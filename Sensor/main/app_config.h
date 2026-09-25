@@ -21,10 +21,13 @@ extern "C" {
 #define HE_GPIO_ONEWIRE        GPIO_NUM_32   /* DS18B20 data line        */
 
 /* ---- Factory-reset button (EN / BOOT strap pin GPIO0) ----
- * Holding it for at least HE_RESET_HOLD_SEC seconds erases the paired
- * radio id from NVS; the node then reboots into unpaired (T00) mode. */
+ * Holding it for at least HE_RESET_HOLD_SEC seconds arms the reset: the
+ * on-board LED lights up as the confirmation hint; the id is erased and
+ * the node reboots (unpaired, T00) AFTER the button is released. */
 #define HE_GPIO_RESET_BTN      GPIO_NUM_0
 #define HE_RESET_HOLD_SEC      5
+/* On-board LED (devkit): lights on RESET threshold reached. */
+#define HE_GPIO_RESET_LED      GPIO_NUM_2
 
 /* ---- LoRa radio (UART) ---- */
 #define HE_LORA_UART           UART_NUM_1
