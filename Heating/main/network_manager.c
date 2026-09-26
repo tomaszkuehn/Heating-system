@@ -239,6 +239,17 @@ static void start_ethernet(void)
         ESP_LOGI(TAG, "ETH static IP: %s/%s gw %s", HE_ETH_STATIC_IP, HE_ETH_NETMASK, HE_ETH_GATEWAY);
     }
 
+    /* With dhcpc stopped the netif has no DNS servers, so lwip cannot resolve
+     * pool.ntp.org and SNTP never syncs (time_synced stays false, which gates
+     * minute sampling -> empty 24h/daily charts). Set DNS explicitly. */
+    esp_netif_dns_info_t dns;
+    dns.ip.type = ESP_IPADDR_TYPE_V4;
+    dns.ip.u_addr.ip4.addr = esp_ip4addr_aton(HE_ETH_DNS_MAIN);
+    esp_netif_set_dns_info(s_eth_netif, ESP_NETIF_DNS_MAIN, &dns);
+    dns.ip.u_addr.ip4.addr = esp_ip4addr_aton(HE_ETH_DNS_BACKUP);
+    esp_netif_set_dns_info(s_eth_netif, ESP_NETIF_DNS_BACKUP, &dns);
+    ESP_LOGI(TAG, "ETH DNS: %s / %s", HE_ETH_DNS_MAIN, HE_ETH_DNS_BACKUP);
+
     ESP_ERROR_CHECK(esp_eth_start(s_eth_handle));
     ESP_LOGI(TAG, "Ethernet started (LAN8720 addr=%d, MDC=%d, MDIO=%d)",
              phy_addr, HE_ETH_MDC_GPIO, HE_ETH_MDIO_GPIO);

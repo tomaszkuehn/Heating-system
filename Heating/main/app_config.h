@@ -71,7 +71,12 @@ extern "C" {
 /* Static Ethernet configuration (DHCP client disabled on the ETH netif). */
 #define HE_ETH_STATIC_IP       "10.168.34.55"
 #define HE_ETH_NETMASK         "255.255.255.0"
-#define HE_ETH_GATEWAY         "10.168.34.1"
+#define HE_ETH_GATEWAY         "10.168.34.254"
+/* DNS for the static ETH netif. With dhcpc stopped the interface gets NO DNS
+ * server, so lwip can't resolve pool.ntp.org and SNTP never syncs the clock
+ * (he_time_valid() stays false => minute sampling / charts stay empty). */
+#define HE_ETH_DNS_MAIN        "8.8.8.8"
+#define HE_ETH_DNS_BACKUP      "8.8.4.4"
 
 /* ---- Control loop timing ---- */
 #define HE_CONTROL_TICK_MS      1000          /* control engine period       */
