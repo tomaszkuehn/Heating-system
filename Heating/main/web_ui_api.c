@@ -623,6 +623,29 @@ static esp_err_t h_sensor_restore(httpd_req_t *req)
     CFG_RET(send_text(req, "ok", 200));
 }
 
+/* ---- /api/sensor/buffer?id= ---- 
+ * Returns the last HE_MEAS_BUF_LEN measurement events for one sensor
+ * (id 0 = external, 1..6 = internal): [ts, kind, value]. kind is
+ * "OK" | "ERR" | "MISS"; value is only meaningful for "OK". */
+static esp_err_t h_sensor_buffer(httpd_req_t *req)
+{
+    char idstr[8]; if (!qarg(req, "id", idstr, sizeof(idstr))) return send_text(req, "missing id", 400);
+    he_meas_slot_t buf[HE_MEAS_BUF_LEN];
+    int n = sensor_manager_get_buffer(atoi(idstr), buf, HE_MEAS_BUF_LEN);
+    char b[512]; int p = 0;
+    p += snprintf(b + p, sizeof(b) - p, "[");
+    for (int i = 0; i < n; i++) {
+        const char *kind = buf[i].kind == HE_MEAS_OK ? "OK"
+                         : buf[i].kind == HE_MEAS_ERR ? "ERR" : "MISS";
+        p += snprintf(b + p, sizeof(b) - p, "%s[%u,\"%s\",%.2f]",
+                      i ? "," : "", (unsigned)buf[i].ts, kind,
+                      (buf[i].kind == HE_MEAS_OK && !he_isnan(buf[i].value))
+                          ? buf[i].value : -99.0f);
+    }
+    snprintf(b + p, sizeof(b) - p, "]");
+    return send_json(req, b);
+}
+
 /* ---- /api/sensors/count?n=  (define how many internal sensors, 1..6) ---- */
 static esp_err_t h_sensors_count(httpd_req_t *req)
 {
@@ -1438,6 +1461,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/profile", .method = HTTP_POST, .handler = h_profile_post, .user_ctx = NULL },
     { .uri = "/api/profile/file", .method = HTTP_POST, .handler = h_profile_file, .user_ctx = NULL },
     { .uri = "/api/sensor",  .method = HTTP_POST, .handler = h_sensor_post,  .user_ctx = NULL },
+    { .uri = "/api/sensor/buffer", .method = HTTP_GET, .handler = h_sensor_buffer, .user_ctx = NULL },
     { .uri = "/api/sensor/restore", .method = HTTP_POST, .handler = h_sensor_restore, .user_ctx = NULL },
     { .uri = "/api/sensors/count", .method = HTTP_POST, .handler = h_sensors_count, .user_ctx = NULL },
     { .uri = "/api/boost",   .method = HTTP_POST, .handler = h_boost,        .user_ctx = NULL },

@@ -278,6 +278,40 @@ function showSensorDetail(sx) {
   $('sensorDetailBody').innerHTML = sensorHealthDetail(sx);
   sd.classList.remove('hidden');
 }
+
+/* Render the last measurement-buffer events for one sensor. Each row is
+ * [ts, kind, value]; kind = OK | ERR | MISS. Times are unix seconds once the
+ * clock is synced, otherwise uptime seconds (labelled "boot"). */
+function bufferRows(slots, synced) {
+  if (!slots || !slots.length) return '<div style="color:var(--muted)">Brak wpisów.</div>';
+  return '<table class="tbl" style="min-width:0"><thead><tr><th>#</th><th>Czas</th><th>Status</th><th>Wartość</th></tr></thead><tbody>'
+    + slots.map((e, i) => {
+        const ts = e[0], kind = e[1], val = e[2];
+        const when = synced ? new Date(ts * 1000).toLocaleTimeString()
+                            : 'boot +' + ts + 's';
+        const v = kind === 'OK' ? (val.toFixed(2) + ' °C')
+                : kind === 'ERR' ? '<span style="color:var(--err)">ERR</span>'
+                : '<span style="color:var(--warn)">brak</span>';
+        const kc = kind === 'OK' ? 'q-OK' : kind === 'ERR' ? 'q-STALE' : '';
+        return `<tr><td>${i + 1}</td><td style="font-family:monospace">${when}</td><td class="${kc}">${kind}</td><td>${v}</td></tr>`;
+      }).join('')
+    + '</tbody></table>';
+}
+
+async function showSensorBuffer(sx) {
+  const sd = $('sensorDetail');
+  $('sensorDetailTitle').textContent = (sx.name || ('Czujnik #' + sx.id)) + ' — bufor pomiarów';
+  $('sensorDetailBody').innerHTML = '<div style="color:var(--muted)">Ładowanie…</div>';
+  sd.classList.remove('hidden');
+  const slots = await api('/api/sensor/buffer?id=' + sx.id) || [];
+  const synced = !!(lastState && lastState.time_synced);
+  $('sensorDetailBody').innerHTML =
+    '<div style="margin-bottom:6px">Średnia ruchoma z 8 surowych odczytów — raw ' +
+    fmtT(sx.raw) + ' → eff ' + fmtT(sx.eff) + '</div>'
+    + bufferRows(slots, synced)
+    + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">OK = pomiar, ERR = ramka ERR z czujnika, brak = oczekiwana ramka nie dotarła (MISS).</div>';
+}
+
 function renderSensors(sensors) {
   const tb = $('sensorsTable').querySelector('tbody');
   tb.innerHTML = '';
@@ -296,7 +330,7 @@ function renderSensors(sensors) {
       <td class="hcell">${healthDot(q, sx)}</td>
       <td class="qcell q-${q}">${q}${sx.window ? ' ⊗' : ''}</td>
       <td class="ecell">${fmtT(sx.eff)}</td>
-      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.radio_id ? `<button class="btn btn-danger" style="padding:4px 8px;margin-left:4px" data-unpair="${sx.radio_id}" title="Usuń czujkę LoRa (węzeł zachowa swoje ID — reset przyciskiem BOOT na węźle)">Usuń</button>` : ''}</td>`;
+      <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button><button class="btn" style="padding:4px 8px;margin-left:4px;background:#444" data-buf="${sx.id}" title="Pokaż bufor pomiarów z czasami">📊 Bufor</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.radio_id ? `<button class="btn btn-danger" style="padding:4px 8px;margin-left:4px" data-unpair="${sx.radio_id}" title="Usuń czujkę LoRa (węzeł zachowa swoje ID — reset przyciskiem BOOT na węźle)">Usuń</button>` : ''}</td>`;
     const inputs = tr.querySelectorAll('input');
     tr.querySelector('button[data-id]').onclick = () => {
       const body = { name: inputs[0].value, active: inputs[1].checked,
@@ -304,6 +338,8 @@ function renderSensors(sensors) {
         comfort: parseFloat(inputs[4].value) };
       post('/api/sensor?id=' + sx.id, body, true).then(() => refresh());
     };
+    const bb = tr.querySelector('button[data-buf]');
+    if (bb) bb.onclick = () => showSensorBuffer(sx);
     const rb = tr.querySelector('button[data-restore]');
     if (rb) rb.onclick = () => post('/api/sensor/restore?id=' + sx.id, '').then(() => refresh());
     /* Delete LoRa sensor: extra inline confirmation before the call. */

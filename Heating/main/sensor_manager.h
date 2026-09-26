@@ -49,6 +49,33 @@ void sensor_manager_lora_update(int id, float temperature);
  * Called by sensor_manager_lora_update. Exposed for tests. */
 void sensor_manager_note_rx(sensor_t *s);
 
+/* Record a probe read failure (ERR frame) received over the radio link.
+ * id is the radio id (1..HE_MAX_SENSORS); adds an ERR entry to that sensor's
+ * measurement buffer and counts the frame for link-loss accounting. */
+void sensor_manager_lora_err(int radio_id);
+
+/* ---- Measurement-buffer diagnostics (UI "Bufor" panel) ----
+ * A chronological ring of the last HE_MEAS_BUF_LEN measurement events per
+ * sensor: a valid reading, an ERR frame from the node, or a MISS (an expected
+ * frame that never arrived). Kept in RAM only (never persisted to NVS). */
+#define HE_MEAS_BUF_LEN  8
+typedef enum {
+    HE_MEAS_OK = 0,   /* valid measurement            */
+    HE_MEAS_ERR,      /* ERR frame (probe read error) */
+    HE_MEAS_MISS,     /* expected frame not received  */
+} he_meas_kind_t;
+
+typedef struct {
+    uint32_t       ts;      /* unix seconds (uptime s before SNTP is valid) */
+    float          value;   /* valid only for HE_MEAS_OK                     */
+    he_meas_kind_t kind;
+} he_meas_slot_t;
+
+/* Copy the last measurement events (oldest first) for a sensor id
+ * (0 = external, 1..HE_MAX_SENSORS = internal logical id).
+ * Returns the number of slots written (0 when the id is unknown). */
+int sensor_manager_get_buffer(int id, he_meas_slot_t *out, int max);
+
 /* Frame protocol constants (external sensor interface). */
 #define HE_FRAME_START  0xAA
 #define HE_FRAME_END    0x55

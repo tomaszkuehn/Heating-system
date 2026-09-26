@@ -4,6 +4,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,6 +27,78 @@ static int64_t s_drift_since_us[HE_MAX_SENSORS];
 static uint8_t s_uart_buf[HE_SENSOR_BUF_SIZE];
 
 static uint32_t mono_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+/* ---- Measurement-buffer diagnostics (UI "Bufor" panel) ----
+ * RAM-only chronological ring per sensor id ([0]=external, [1..6]=internal),
+ * holding the last HE_MEAS_BUF_LEN measurement events. A period tick in
+ * sensor_manager_poll() synthesises a MISS entry for any frame slot that
+ * elapsed with no incoming measurement/ERR. Never persisted to NVS. */
+typedef struct {
+    he_meas_slot_t slots[HE_MEAS_BUF_LEN];
+    int            head;            /* next write index                    */
+    int            count;           /* valid slots (0..HE_MEAS_BUF_LEN)    */
+    uint32_t       next_slot_ms;    /* next expected frame boundary        */
+} meas_buf_t;
+
+static meas_buf_t s_meas[HE_MAX_SENSORS + 1];
+
+/* Event timestamps: real unix time once SNTP has synced, else uptime seconds
+ * (same convention the event log uses so the UI can label an unsynced clock). */
+static uint32_t meas_now(void)
+{
+    if (he_time_valid()) return (uint32_t)time(NULL);
+    return (uint32_t)(esp_timer_get_time() / 1000000);
+}
+
+/* Map a sensor pointer to its buffer index (0 = external, id = internal). */
+static int meas_index(const sensor_t *s)
+{
+    if (!s) return -1;
+    if (s == s_external) return 0;
+    for (int i = 0; i < s_count; i++)
+        if (&s_sensors[i] == s) return s_sensors[i].id;
+    return -1;
+}
+
+static void meas_push(int idx, he_meas_kind_t kind, float value)
+{
+    if (idx < 0 || idx > HE_MAX_SENSORS) return;
+    meas_buf_t *b = &s_meas[idx];
+    he_meas_slot_t *sl = &b->slots[b->head];
+    sl->ts = meas_now();
+    sl->value = value;
+    sl->kind = kind;
+    b->head = (b->head + 1) % HE_MEAS_BUF_LEN;
+    if (b->count < HE_MEAS_BUF_LEN) b->count++;
+    /* Re-anchor the expected-frame clock to this arrival: sensor nodes send
+     * every period +/- jitter, so a free-running grid would fire spurious
+     * MISSes right before a late-but-valid frame. */
+    b->next_slot_ms = mono_ms() + HE_LORA_FRAME_PERIOD_MS;
+}
+
+/* Declare a MISS when no frame has arrived for longer than a period plus a
+ * half-period grace (absorbs transmit jitter and the ~1 s poll granularity). */
+static void meas_tick(int idx)
+{
+    if (idx < 0 || idx > HE_MAX_SENSORS) return;
+    meas_buf_t *b = &s_meas[idx];
+    uint32_t now = mono_ms();
+    if (b->next_slot_ms == 0) { b->next_slot_ms = now + HE_LORA_FRAME_PERIOD_MS; return; }
+    if ((int32_t)(now - (b->next_slot_ms + HE_LORA_FRAME_PERIOD_MS / 2)) < 0) return;
+    meas_push(idx, HE_MEAS_MISS, he_nan());
+}
+
+int sensor_manager_get_buffer(int id, he_meas_slot_t *out, int max)
+{
+    if (!out || max <= 0 || id < 0 || id > HE_MAX_SENSORS) return 0;
+    he_config_lock();
+    meas_buf_t *b = &s_meas[id];
+    int n = b->count < max ? b->count : max;
+    int start = ((b->head - b->count) % HE_MEAS_BUF_LEN + HE_MEAS_BUF_LEN) % HE_MEAS_BUF_LEN;
+    for (int i = 0; i < n; i++) out[i] = b->slots[(start + i) % HE_MEAS_BUF_LEN];
+    he_config_unlock();
+    return n;
+}
 
 /* ---- CRC8 (poly 0x07) ---- */
 static uint8_t crc8(const uint8_t *p, size_t n)
@@ -63,6 +136,7 @@ void sensor_manager_init(void)
         s_last_change_us[i] = 0;
         s_drift_since_us[i] = 0;
     }
+    memset(s_meas, 0, sizeof(s_meas));
     ESP_LOGI(TAG, "UART%d initialised for external sensor interface", HE_SENSOR_UART);
 }
 
@@ -86,6 +160,9 @@ static void push_reading(sensor_t *s, float raw)
     float avg = sum / (float)s->sample_count;
     s->last_effective = avg + s->calib_offset + s->comfort_offset;
     s->last_update_ms = mono_ms();
+
+    /* Diagnostic buffer: record the accepted raw measurement. */
+    meas_push(meas_index(s), HE_MEAS_OK, raw);
 }
 
 /* ---- Radio-link loss estimation (spec: yellow at >30% lost) ----
@@ -362,6 +439,14 @@ void sensor_manager_poll(void)
                 stale_detect(s, i);
         }
     }
+
+    /* Advance the diagnostic frame-slot clock for every radio-linked sensor so
+     * a gap in transmissions turns into MISS entries in the UI buffer. */
+    for (int i = 0; i < s_count; i++) {
+        sensor_t *s = &s_sensors[i];
+        if (s->active && !s->simulated && s->radio_id != 0)
+            meas_tick(s->id);
+    }
 }
 
 float sensor_manager_system_temp(void)
@@ -431,4 +516,21 @@ void sensor_manager_lora_update(int id, float temperature)
           target->quality = QUAL_OUT_OF_RANGE;
       else
           target->quality = QUAL_OK;
+}
+
+void sensor_manager_lora_err(int radio_id)
+{
+    /* Probe-failure marker (ERR frame) from a node: keep the sensor's last
+     * value but log an ERR entry in its diagnostic buffer and count the frame
+     * arrival so it is not also counted as a MISS. */
+    if (radio_id < 1 || radio_id > HE_MAX_SENSORS) return;
+    sensor_t *target = NULL;
+    for (int k = 0; k < s_count; k++) {
+        if (s_sensors[k].radio_id == radio_id) { target = &s_sensors[k]; break; }
+    }
+    /* Record the event even when the node is not bound/active so the UI buffer
+     * still shows what arrived on the radio link. */
+    int idx = target ? meas_index(target) : radio_id;
+    meas_push(idx, HE_MEAS_ERR, he_nan());
+    if (target) sensor_manager_note_rx(target);
 }

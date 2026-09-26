@@ -302,6 +302,9 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
 
     if (he_isnan(temp)) {
         ESP_LOGW(TAG, "sensor T%d reports ERR (bin)", id);
+        he_config_lock();
+        sensor_manager_lora_err(id);
+        he_config_unlock();
         send_binary_ack(id);
         return;
     }
