@@ -431,6 +431,24 @@ static void lora_rx_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+
+        /* Age tracked announcements once per second, driven by the wall
+         * clock — NOT by frame arrivals. The old code sat behind the
+         * `got <= 0` continue below, so with a frame every ~21 s age_s
+         * advanced once per frame instead of once per second: a stale
+         * announcement (e.g. a pre-pairing T0) lingered for ~30 frames
+         * (~10 min) instead of the 30 s TTL, keeping the "unpaired node"
+         * banner and the pairing modal alive with no live T0 frames. */
+        if (esp_timer_get_time() - age_tick_us >= 1000000) {
+            age_tick_us = esp_timer_get_time();
+            for (int i = 0; i <= HE_MAX_SENSORS; i++) {
+                if (s_pair_nodes[i].age_s >= 0) {
+                    if (++s_pair_nodes[i].age_s > HE_PAIR_REQ_TTL_MS / 1000)
+                        s_pair_nodes[i].age_s = -1;
+                }
+            }
+        }
+
         uint8_t b;
         int got = uart_read_bytes(HE_LORA_UART, &b, 1, pdMS_TO_TICKS(100));
         if (got <= 0) continue;
@@ -455,17 +473,6 @@ static void lora_rx_task(void *arg)
             line[line_len] = '\0';
             process_line(line);
             line_len = 0;
-        }
-
-        /* Age stale announcements once per second. */
-        if (esp_timer_get_time() - age_tick_us >= 1000000) {
-            age_tick_us = esp_timer_get_time();
-            for (int i = 0; i <= HE_MAX_SENSORS; i++) {
-                if (s_pair_nodes[i].age_s >= 0) {
-                    if (++s_pair_nodes[i].age_s > HE_PAIR_REQ_TTL_MS / 1000)
-                        s_pair_nodes[i].age_s = -1;
-                }
-            }
         }
     }
 }

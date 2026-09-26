@@ -417,16 +417,18 @@ async function pollPair() {
   if (!p) return;
   pairState = p;
   const banner = $('pairBanner');
-  const nd = (p.nodes && p.nodes.length) ? p.nodes[0] : null;
+  /* The banner is specifically about an UNPAIRED node (factory id 0).
+   * Paired nodes also appear in nodes[] (indexed by radio id) — showing the
+   * "unconfigured" banner for them is wrong. */
+  const nd = (p.nodes && p.nodes.find(n => n.id === 0)) || null;
   if (nd) {
     $('pairInfo').textContent = (nd.temp > -50 ? nd.temp.toFixed(1) + ' °C, ' : '')
       + 'ogłoszenie ' + nd.age + ' s temu'
-      + (nd.id !== 0 ? ` (LoRa ID ${nd.id})` : ' (nieskonfigurowany węzeł)');
+      + ' (nieskonfigurowany węzeł)';
     banner.classList.remove('hidden');
   } else {
     banner.classList.add('hidden');
   }
-  // keep old free[] for backward compat, plus nodes[]
 }
 
 /* Re-render the currently open modal's list from the latest pairState
