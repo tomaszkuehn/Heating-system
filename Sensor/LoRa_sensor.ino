@@ -330,13 +330,14 @@ void loop() {
 
   if (!awaitingAck && (int32_t)(now - nextMeasurementAt) >= 0) { // CHANGE
     sendMeasurement();
+    now = millis(); // FIX: sendMeasurement() sets lastSendAt=millis(); refresh now so the timeout check below cannot underflow
   }
 
   // CHANGE: increase power after 2 seconds without acknowledgement; the
   // measurement slot is freed so the 20 s cadence is never blocked (an ACK
   // arriving later still lowers the power). Reboot is based on lastAckAt
   // alone, so it also fires when frames stopped being sent entirely.
-  if (awaitingAck && now - lastSendAt >= ACK_TIMEOUT_MS) {
+  if (awaitingAck && (int32_t)(now - lastSendAt) >= (int32_t)ACK_TIMEOUT_MS) { // FIX: signed compare, stale-now proof
     if (LoRaPowerStatus != HIGH_POWER) {
       LoRaPower(HIGH_POWER);
     }
