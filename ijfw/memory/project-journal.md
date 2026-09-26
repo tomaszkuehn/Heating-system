@@ -9,3 +9,5 @@
 - [2026-09-24T17:28:26.508Z] **decision** [git, restructure, submodule, commit, push]: Single repo restructure: submodule dropped, commit 20c5dc2 pushed
 - [2026-09-24T20:19:27.060Z] **decision** [lora, security, design, deferred, v2]: LoRa v2 designed, NOT implemented yet (user deferred)
 - [2026-09-24T20:37:23.700Z] **observation** [sensor, averaging, health, loss, lora, ota]: 8-sample avg + loss-based health deployed, STALE bug fixed
+- [2026-09-26T09:39:26.930Z] **decision** [lora, pairing, hmac, esp32, bugfix]: LoRa PAIR HMAC bug fixed: tag must cover nonce
+- [2026-09-26T18:09:52.155Z] **observation** [lora, sensor, bug, ack, arduino, inino]: BUG w Sensor/LoRa_sensor.ino (Arduino, wgrany build = repo, potwierdzone hashem zbudowanego .cpp): ACK kontrolera nigdy nie jest kwitowany, sensor restartuje sie co ~120 s ("No acknowledgement for too

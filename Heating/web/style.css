@@ -62,6 +62,7 @@ canvas{width:100%;background:#11151d;border:1px solid var(--bd);border-radius:8p
 .profile-grid .ph input{width:100%;background:transparent;border:0;color:var(--text);font-size:12px;text-align:center;border-bottom:1px solid var(--bd);padding:2px}
 .mono{font-family:ui-monospace,Consolas,Menlo,monospace;font-size:12px;white-space:pre-wrap}
 .log{max-height:240px;overflow:auto;background:#11151d;border:1px solid var(--bd);border-radius:8px;padding:8px}
+.log .log-tx{color:#f59e0b}
 .fault{margin-top:10px;padding:10px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);border-radius:8px;color:var(--err)}
 .fault.hidden{display:none}
 .sim-card{border-color:var(--sim)}

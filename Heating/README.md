@@ -63,7 +63,7 @@ Firmware jest podzielony na moduły w `main/`:
 | Plik                  | Moduł (spec)         | Odpowiedzialność                                                  |
 |-----------------------|----------------------|-------------------------------------------------------------------|
 | `sensor_manager.c`    | sensor_manager       | UART z zewn. interfejsem, średnia krocząca 8, temp. efektywna, walidacja, otwarte okno, estymacja strat łącza radiowego |
-| `lora_receiver.c`     | lora_receiver        | odbiornik LoRa (Ebyte E32), zadanie FreeRTOS, dekodowanie ramek tekstowych z zdalnego węzła DS18x20, tryb testowy `/api/lora/test` |
+| `lora_receiver.c`     | lora_receiver        | odbiornik LoRa (Ebyte E32), zadanie FreeRTOS, dekodowanie ramek tekstowych (ESP-IDF) i binarnych `02 E3` (Arduino) ze zdalnego węzła DS18x20, sterowanie kanałem RF, tryb testowy `/api/lora/test` |
 | `simulation_manager.c`| simulation_manager   | symulacja czujników i model cieplny budynku                       |
 | `control_engine.c`    | control_engine       | automat stanów, histereza, profil dobowy, BOOST, wybieg, awaryjny |
 | `heating_output.c`    | heating_output       | linia GPIO, impulsy wybiegu pompy, symulacja wyjścia              |
@@ -111,15 +111,22 @@ mas na headerze — datasheet WT32-ETH01 (ver. 1.3, s. 9–10): masa = 4. pin
 od góry i skrajny dolny prawego headera oraz 2./9./11. lewego; IO14/IO12
 zwykłe GPIO.
 
-Moduł LoRa na sterowniku działa w trybie nasłuchu (AUX/TX-RX na LOW). Zdalny
-węzeł wysyła linie tekstowe `"TT.TTT T<id>&\r\n"` (po jednej na czujnik);
-`lora_receiver` dekoduje je w osobnym zadaniu FreeRTOS (`lora_rx`) i przekazuje
-do `sensor_manager_lora_update()` pod blokadą `he_config_lock()`. Po udanym
-odkodowaniu i walidacji pomiaru sterownik odsyła bajt `'X'` jako potwierdzenie
-(ACK). Węzeł oczekuje ACK w oknie 5 s i na jego podstawie reguluje moc
-nadajnika (status 50→40→1): brak ACK obniża moc, a po 49 nieudanych cyklach
-wymusza restart. Aktualizacje pomijane są dla czujników wyłączonych lub
-symulowanych — radio nie może ich nadpisać.
+Moduł LoRa na sterowniku działa w trybie nasłuchu (AUX/TX-RX na LOW). Sterownik
+obsługuje **dwa** protokoły ramek (patrz `lora_receiver.c`) i odpowiada w tym
+samym formacie, w którym ramka przyszła:
+
+- **tekstowy** (węzeł ESP-IDF, `Sensor/main/`): `"TT.TTT T<id>&\r\n"`; ACK to
+  `"ACK <id>&"` (adresowany — węzeł ignoruje ACK innego ID).
+- **binarny** (Arduino, `Sensor/LoRa_sensor.ino`, zgodny z `LoRa.txt`):
+  `<0x02 0xE3><payload>T<id>#`; ACK to `<0x02 0xE3>X<id>T9#`.
+
+`lora_receiver` dekoduje każdą ramkę w osobnym zadaniu FreeRTOS (`lora_rx`)
+i przekazuje pomiar do `sensor_manager_lora_update()` pod blokadą
+`he_config_lock()`. Bufor akumuluje bajty i kończy ramkę na `&` (tekst) lub `#`
+(binarnie), więc kilka ramek obecnych w buforze modułu jest przetwarzane
+osobno; ramki niezgodne ze wzorcem magic `02 E3` są ignorowane. Aktualizacje
+pomijane są dla czujników wyłączonych lub symulowanych — radio nie może ich
+nadpisać.
 
 ### Test łącza i weryfikacja modułu (`/api/lora/test`)
 
@@ -133,13 +140,22 @@ i mocy. Pola błędu zawierają podpowiedź serwisową (okablowanie/zasilanie).
 Wynik ostatniego uruchomienia (urządzenie): `rx_idle=1`, moduł odpowiedział —
 parametry fabryczne `0000/0x1A`, kanał 0x17 = 433,125 MHz, 9600 8N1, 2,4k, 10 dBm.
 
+### Kanał radiowy
+
+Obie strony muszą nadawać na **tym samym kanale**. Moduł sterownika jest
+sprowadzany do `HE_LORA_CHANNEL = 23` (433 MHz) przy starcie
+(`lora_receiver_init`): firmware odczytuje rejestry E32 (`C1 C1 C1` →
+`C0 ADDH ADDL SPED CHAN OPTION`) i tylko gdy `CHAN` się różni, zapisuje nową
+wartość i weryfikuje odczytem. Endpoint `POST /api/lora/config?chan=N`
+pozwala ustawić kanał ręcznie z panelu (zakres 0..83 → 410..493 MHz).
+
 ### Kadencja i straty
 
-Nominalna kadencja ramek węzła to ~5,5–5,8 s (`HE_LORA_FRAME_PERIOD_MS = 6000`
-— używane do estymacji strat, patrz sekcja A2). Obce ramki LoRa odbierane na
-tym samym kanale są obecnie ignorowane przez parser (wymagany format
-`TT.TTT T<id>&`) — planowane utwardzenie protokołu (MAC + anti-replay) jest
-zaprojektowane, ale jeszcze niewdrożone.
+Zgodnie z `LoRa.txt` węzeł wysyła pomiar **co 20 s + losowe 0..2 s**, więc
+nominalny odstęp to ~21 s (`HE_LORA_FRAME_PERIOD_MS = 21000` — używane do
+estymacji strat, patrz sekcja A2). Obce ramki LoRa odbierane na tym samym
+kanale są ignorowane przez parser (wymagany magic `02 E3` lub format
+`TT.TTT T<id>&`).
 
 #### Implementacja Arduino (`Sensor/LoRa_sensor.ino`) — protokół binarny
 
@@ -153,43 +169,46 @@ formatu ramek z magiciem `0x02 0xE3`:
 
 - Pomiar: `02 E3 22.361 T4#` (payload = `22.361`, id=4)
 - Brak sondy: `02 E3 ERRT2#` (payload = `ERR`)
-- ACK: `02 E3 X2T9#` (payload = `X2`)
-- Parowanie: `02 E3 PR3T0#` (payload = `PR3`)
+- ACK kontrolera: `02 E3 X2T9#` (payload = `X2`, kontroler T9)
+- Parowanie (kontroler→węzeł): `02 E3 PR3T9#` (payload = `PR3`)
 
 Kontroler obsługuje oba protokoły (tekstowy ESP-IDF i binarny Arduino).
 Szczegóły w `LoRa.txt` (katalog główny repozytorium).
 
 ### Parowanie węzłów LoRa (dodanie czujnika / zmiana ID)
 
-Protokół radiowy (tekstowy, 433 MHz):
+Protokół radiowy (433 MHz), dwa warianty w zależności od typu węzła:
 
-- Węzeł niesparowany (NVS `cfg`/`node_id` = 0) ogłasza się ramką
-  `TT.TTT T00&` — temperatura sonda + ID 00.
-- Węzeł sparowany wysyła `TT.TTT T<n>&` (ID = `node_id` + indeks sondy).
-- Kontroler potwierdza każdą ramkę pojedynczym bajtem `'X'`.
-- Węzeł bez odczytu sond wysyła marker błędu `ERR T&` (temp = NaN).
+- Węzeł niesparowany (ID 0) ogłasza się co cykl: tekst `TT.TTT T00&` albo
+  binar `02 E3 <temp> T0#`.
+- Węzeł sparowany nadaje `T<n>` (tekst) lub `T<n>#` (binar).
+- Kontroler potwierdza adresowany pomiar: `ACK <id>&` (tekst) lub
+  `02 E3 X<id>T9#` (binar). Węzeł ignoruje ACK innego ID.
+- Węzeł bez odczytu sond wysyła marker błędu `ERR` (`ERR T&` / `02 E3 ERRT2#`).
 
 Procedura parowania (UI → „＋ Dodaj czujnik LoRa" albo banner „Wykryto
 nieskonfigurowany czujnik"):
 
-1. Węzeł w trybie niesparowanym nadaje w pętli ramki `T00` (co ~6 s).
-2. Kontroler rejestruje ostatnie ogłoszenie (`s_pair_req_temp/us`, TTL 30 s)
-   i udostępnia je przez `GET /api/lora/pair` →
-   `{"request":true,"temp":21.9,"age":3,"free":[2,3,4,5,6]}`.
+1. Węzeł w trybie niesparowanym nadaje w pętli ramki `T0` (co ~21 s).
+2. Kontroler rejestruje ostatnie ogłoszenie dla każdego wykrytego ID i
+   udostępnia je przez `GET /api/lora/pair` →
+   `{"nodes":[{"id":0,"temp":21.9,"age":3}],"free":[2,3,4,5,6]}`.
    `free[]` = ID radiowe 1..6 nieobsługiwane przez żaden aktywny czujnik.
 3. Użytkownik wybiera ID z listy; `POST /api/lora/pair?id=N` tworzy brakujące
-   sloty czujników (nazwa domyślna „Czujnik LoRa %d") i wysyła w radiu
-   broadcast `PAIR <n>&` powtarzany ~6 s (30 × co 200 ms — broadcast trwa
-   dłużej niż cykl węzła, więc trafia w okno nasłuchu ACK węzła).
-4. Węzeł zapisuje ID do NVS (przetrwa restart), odpowiada `OK T<n>&` i od tej
-   chwili nadaje jako `T<n>`.
+   sloty czujników (nazwa domyślna „Czujnik LoRa %d") i wysyła radiowo
+   **tylko binarną** ramkę `02 E3 PR<n>T9#` (powtarzaną ~9 s — dłużej niż cykl
+   słuchania węzła, więc trafia w jego okno odbioru). Starsza, tekstowa ramka
+   `PAIR <n>&` z podpisem HMAC została **usunięta** — węzły używają protokołu
+   binarnego z `LoRa.txt`.
+4. Węzeł o ID 0 zapisuje nowe ID w NVS (przetrwa restart) i od tej chwili
+   nadaje jako `T<n>`.
 
-Zmiana ID istniejącego węzła (przycisk „ID…" w wierszu czujnika radiowego):
-
-- `POST /api/lora/repair?from=<stare>&to=<nowe>` wysyła broadcast
-  `REPAIR <stare> <nowe>&`; akceptuje go wyłącznie węzeł aktualnie
-  posiadający ID `<stare>` (parsowane w oknie ACK również w trybie
-  sparowanym). Węzeł zapisuje nowy ID w NVS i odpowiada `OK T<n>&`.
+Uwaga: **zmiana ID istniejącego węzła oraz zdalny reset (REPAIR/RESET) nie są
+już obsługiwane** — nie istnieje `POST /api/lora/repair`. Węzeł trzymający ID
+można przywrócić do fabrycznego 0 wyłącznie jego przyciskiem BOOT (przytrzymanie
+> 5 s, patrz `Sensor/README.md`). Endpoint usuwania czujnika
+`POST /api/lora/unpair?id=N` tylko zwalnia slot w konfiguracji (węzeł zachowuje
+swoje ID).
 
 Uwaga: ramka `ERR T&` (brak sond) jest ignorowana przez logikę parowania —
 dawniej była błędnie traktowana jako ogłoszenie `T00` z temperaturą NaN.
@@ -308,7 +327,7 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   brak danych (TIMEOUT/OUT_OF_RANGE), ⚫ szara = DISABLED. Dla czujników
   radiowych (LoRa) priorytetem jest **wskaźnik strat** `loss` (pole w
   `/api/state`): sterownik porównuje odstępy między 8 ostatnimi przyjęciami
-  z nominalną kadencją (`HE_LORA_FRAME_PERIOD_MS = 6 s`) — duplikaty
+  z nominalną kadencją (`HE_LORA_FRAME_PERIOD_MS = 21 s`) — duplikaty
   (odstęp < połowa okresu) nie liczą się jako dane. Dla czujników polled
   kropka zachowuje stare znaczenie (WINDOW_OPEN = żółta, STALE = czerwona;
   detekcja STALE dotyczy wyłącznie czujników polled — stabilna temperatura
@@ -321,9 +340,9 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   czujników (oraz w banerze o wykryciu węzła) otwiera modal z listą wolnych ID
   (`free[]` z `GET /api/lora/pair`, odświeżane co 5 s) i statusem wykrytego
   węzła (temperatura ogłoszenia + wiek). Po wyborze ID węzeł jest parowany
-  radiowo (`PAIR <n>&`, patrz sekcja „Parowanie węzłów LoRa"). W wierszu
-  czujnika radiowego dodatkowy przycisk **„ID…"** pozwala zmienić ID węzła
-  (`REPAIR <stare> <nowe>&`) na dowolne wolne.
+  radiowo binarną ramką `02 E3 PR<n>T9#` (patrz sekcja „Parowanie węzłów LoRa").
+  Zmiana ID istniejącego węzła nie jest możliwa z UI (wymaga resetu BOOT na
+  węźle i ponownego parowania).
 - **Wykres zużycia energii (365 dni)** — słupki **minut grzania na dobę**
   (pomarańczowe) z nałożoną linią średniej temperatury systemowej (niebieska).
   Każdy słupek to jeden dzień; oś X to stałe okno **365 dni** kończące się
@@ -429,7 +448,9 @@ uruchomienia, a nie czas rzeczywisty — są wyświetlane jako **`boot +Ns`**
 wpis po restarcie (np. `FAULT_RESTART`) ma czytelny timestamp. Sekcja „Logi /
 alarmy" ma przycisk **„Wyczyść log"** (`POST /api/log/clear` →
 `storage_clear_log()`), który czyści bufor w RAM — operacji nie da się
-cofnąć.
+cofnąć. Ramki radiowe są logowane (RX i TX, w tym ACK `X<id>T9#` oraz
+parowanie `PR<id>T9#`); wiersze **wysłane** przez kontroler (`lora tx:`) są
+wyróżnione **kolorem pomarańczowym** w podglądzie logu.
 
 ### A. Zdarzenia jakości i awarii czujników (`sensor_manager.c`)
 
@@ -480,11 +501,11 @@ uwzględnia wyłącznie czujniki o statusie `OK` lub `SIMULATED`.
   o offsety kalibracji i komfortu (`push_reading()`), co wygładza pojedyncze
   skoki odczytu.
 - **Estymacja strat radiowych** (`sensor_manager_note_rx`): przy każdym
-  przyjęciu ramki LoRay zapisywany jest czas przyjścia w drugim pierścieniu
+  przyjęciu ramki LoRa zapisywany jest czas przyjścia w drugim pierścieniu
   (8 slotów). Odstęp < `HE_LORA_FRAME_PERIOD_MS/2` (duplikat/retransmisja)
-  tylko odświeża znacznik czasu; normalny odstęp → `expected = span / 6 s`,
+  tylko odświeża znacznik czasu; normalny odstęp → `expected = span / 21 s`,
   `missed = expected − interwały`, `loss_pct = 100·missed/(missed+interwały)`.
-  Gdy przez całe okno (8·6 s) nie ma przyjęcia, `loss` forsowane jest do 100%.
+  Gdy przez całe okno (8·21 s) nie ma przyjęcia, `loss` forsowane jest do 100%.
   Czujnik wyłączony zeruje bookkeeping. Wynik dostępny w `/api/state` jako
   `"loss"` (procent) i `"rx"` (bool: czy czujnik jest zasilany radiem) —
   panel zamienia to na kolor kropki Health (żółta przy >30%).

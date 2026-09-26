@@ -11,6 +11,7 @@
 #include "onewire.h"
 #include "ds18b20.h"
 #include "lora.h"
+#include "lora_sec.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -61,14 +62,79 @@ static bool node_id_save(uint8_t id)
     return e == ESP_OK;
 }
 
-/* Parse "PAIR <n>" (controller -> node). Returns id 1..6 or 0 if not a PAIR. */
+/* Parse "PAIR <id> <nonce> <tag>" (controller -> node). Verifies the
+ * HMAC tag (computed over "PAIR <id> <nonce>" — the part before the last
+ * space) and returns the requested id (1..6) or 0 when absent/invalid. */
 static int parse_pair(const char *line)
 {
+    char *sp1 = strchr(line, ' ');
+    if (!sp1) return 0;
+    char *sp2 = strchr(sp1 + 1, ' ');
+    if (!sp2) return 0;
+    char *sp3 = strchr(sp2 + 1, ' ');
+    if (!sp3) return 0;
     if (strncmp(line, "PAIR", 4) != 0) return 0;
-    const char *p = line + 4;
-    while (*p == ' ') p++;
-    int n = atoi(p);
-    return (n >= 1 && n <= HE_MAX_SENSORS) ? n : 0;
+    int n = atoi(sp1 + 1);
+    if (n < 1 || n > HE_MAX_SENSORS) return 0;
+    /* msg excludes the tag: truncate at the last space. */
+    *sp3 = '\0';
+    bool ok = lora_sec_pair_verify(line, sp3 + 1);
+    *sp3 = ' ';
+    if (!ok) {
+        ESP_LOGW(TAG, "PAIR rejected: bad MAC");
+        return 0;
+    }
+    return n;
+}
+
+/* ---- Replay protection: nonce ring in NVS ----
+ * Every accepted PAIR consumes one 32-bit nonce; the last 32 are stored
+ * so a captured frame cannot be replayed even across node reboots. */
+static bool nonce_seen_or_store(uint32_t nonce)
+{
+    nvs_handle_t h;
+    if (nvs_open("cfg", NVS_READWRITE, &h) != ESP_OK) return true;
+    uint8_t ring[128];
+    size_t len = sizeof(ring);
+    int count = 0;
+    if (nvs_get_blob(h, "pair_nv", ring, &len) == ESP_OK && len % 4 == 0)
+        count = (int)(len / 4);
+    for (int i = 0; i < count; i++) {
+        uint32_t v = (uint32_t)ring[i * 4] | ((uint32_t)ring[i * 4 + 1] << 8) |
+                     ((uint32_t)ring[i * 4 + 2] << 16) | ((uint32_t)ring[i * 4 + 3] << 24);
+        if (v == nonce) { nvs_close(h); return true; }   /* replay */
+    }
+    int keep = (count < 32) ? count + 1 : 32;
+    /* Newest first: shift the ring right, drop the oldest when full. */
+    memmove(&ring[4], ring, (size_t)(keep - 1) * 4);
+    ring[0] = (uint8_t)(nonce & 0xff);
+    ring[1] = (uint8_t)((nonce >> 8) & 0xff);
+    ring[2] = (uint8_t)((nonce >> 16) & 0xff);
+    ring[3] = (uint8_t)((nonce >> 24) & 0xff);
+    esp_err_t e = nvs_set_blob(h, "pair_nv", ring, (size_t)keep * 4);
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    return e != ESP_OK;   /* storage failure: reject rather than trust */
+}
+
+/* Extract the 32-bit nonce from "PAIR <id> <nonce8hex> <tag>". */
+static bool pair_nonce(const char *line, uint32_t *out)
+{
+    char *sp1 = strchr(line, ' ');
+    if (!sp1) return false;
+    char *sp2 = strchr(sp1 + 1, ' ');
+    if (!sp2) return false;
+    uint32_t v = 0;
+    for (int i = 0; i < 8; i++) {
+        char c = sp2[1 + i];
+        int d = (c >= '0' && c <= '9') ? c - '0' :
+                (c >= 'a' && c <= 'f') ? c - 'a' + 10 :
+                (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d < 0) return false;
+        v = (v << 4) | (uint32_t)d;
+    }
+    *out = v;
+    return true;
 }
 
 static void led_init(void)
@@ -130,28 +196,6 @@ static void reset_button_task(void *arg)
     }
 }
 
-/* Parse "REPAIR <old> <new>" (controller -> node): addressed re-pairing.
- * Only the node whose current radio id == old accepts it. Returns the new
- * id (1..6) or 0. */
-static int parse_repair(const char *line, uint8_t current_id)
-{
-    if (strncmp(line, "REPAIR", 6) != 0) return 0;
-    const char *p = line + 6;
-    while (*p == ' ') p++;
-    long old_id = strtol(p, (char **)&p, 10);
-    if (old_id != (long)current_id) return 0;   /* not for this node */
-    while (*p == ' ') p++;
-    int n = atoi(p);
-    return (n >= 1 && n <= HE_MAX_SENSORS && n != current_id) ? n : 0;
-}
-
-/* Detect "RESET&" (controller -> node): erase the paired id and reboot
- * into unpaired (factory-default) mode. Returns true on match. */
-static bool is_reset_cmd(const char *line)
-{
-    return strncmp(line, "RESET", 5) == 0;
-}
-
 /* Erase the persisted radio id (factory default = unpaired T00). */
 static void node_id_erase(void)
 {
@@ -186,9 +230,11 @@ static void pairing_loop(void)
         /* Wait for the controller's assignment. */
         int rc = lora_receive_line(HE_LORA_RX_WINDOW_MS, line, sizeof(line));
         if (rc > 0) {
-            if (is_reset_cmd(line)) continue;   /* already factory default */
+            ESP_LOGI(TAG, "rx frame: \"%s\"", line);
+            uint32_t nonce = 0;
             int new_id = parse_pair(line);
-            if (new_id > 0 && node_id_save((uint8_t)new_id)) {
+            if (new_id > 0 && !pair_nonce(line, &nonce)) new_id = 0;
+            if (new_id > 0 && nonce_seen_or_store(nonce) && node_id_save((uint8_t)new_id)) {
                 char ack[16];
                 snprintf(ack, sizeof(ack), "OK T%02d&", new_id);
                 lora_write((const uint8_t *)ack, strlen(ack));
@@ -201,21 +247,10 @@ static void pairing_loop(void)
     }
 }
 
-/* ---- ACK handling (non-blocking receive window) ---- */
+/* ---- ACK handling ---- */
 typedef struct {
-    bool got_ack;     /* 'X' seen from controller */
+    bool got_ack;     /* "ACK <this-id>" frame seen from controller */
 } rx_ctx_t;
-
-static bool on_byte(uint8_t b, void *user)
-{
-    rx_ctx_t *ctx = (rx_ctx_t *)user;
-    fputc(b, stdout);          /* mirror to console like the original */
-    if (b == 'X') {
-        ctx->got_ack = true;
-        return true;
-    }
-    return false;
-}
 
 static int check_message(int status)
 {
@@ -284,32 +319,19 @@ static void sensor_task(void *arg)
         status--;
         ESP_LOGI(TAG, "status=%d pwr=%d", status, lora_power_status());
 
-        /* Listen for ACK; also handle re-pairing commands sent to a
-         * paired node ("PAIR <n>&" changes the radio id in place). */
+        /* Listen for the addressed ACK frame "ACK <id>&". Only a frame
+         * carrying THIS node's radio id counts as a link confirmation. */
         rx_ctx_t ctx = { .got_ack = false };
         char cmd[HE_LORA_LINE_MAX];
         int rc = lora_receive_line(HE_LORA_RX_WINDOW_MS, cmd, sizeof(cmd));
         if (rc > 0) {
-            if (is_reset_cmd(cmd)) {
-                ESP_LOGW(TAG, "RESET command — factory default");
-                node_id_erase();
-                vTaskDelay(pdMS_TO_TICKS(200));
-                esp_restart();
-            }
-            /* A paired node keeps its id: only a REPAIR addressed to it may
-             * change it. Plain "PAIR <n>" is for unpaired (T00) nodes only
-             * and is ignored here. */
-            int new_id = parse_repair(cmd, g_node_id);
-            if (new_id > 0 && new_id != g_node_id && node_id_save((uint8_t)new_id)) {
-                char ack[16];
-                snprintf(ack, sizeof(ack), "OK T%02d&", new_id);
-                lora_write((const uint8_t *)ack, strlen(ack));
-                lora_write((const uint8_t *)"\r\n", 2);
-                ESP_LOGI(TAG, "re-paired as T%02d", new_id);
-            } else {
-                /* Not a PAIR command: honour plain ACK bytes ('X'). */
-                for (int k = 0; k < rc; k++)
-                    if (cmd[k] == 'X') { ctx.got_ack = true; break; }
+            int acked = -1;
+            if (strncmp(cmd, "ACK", 3) == 0 && cmd[3] == ' ')
+                acked = atoi(cmd + 4);
+            if (acked == g_node_id) {
+                ctx.got_ack = true;
+            } else if (acked >= 0) {
+                ESP_LOGI(TAG, "ACK for other node (T%02d), ignored", acked);
             }
         }
         if (ctx.got_ack) {

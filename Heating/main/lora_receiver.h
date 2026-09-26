@@ -2,15 +2,15 @@
  * LoRa receiver (spec section 2 — radio link to the remote sensor node).
  *
  * A UART-attached Ebyte E32 LoRa module receives temperature measurements
- * from the remote DS18x20 sensor node (see Sensor/ in this repository) as
- * text lines: "TT.TTT T<id>&\r\n", one per probe. This module owns the UART
- * driver, a FreeRTOS task that accumulates bytes into lines, decodes them,
- * and forwards each valid (id, temperature) pair to sensor_manager via
- * sensor_manager_lora_update().
- *
- * The radio is configured once at init (AUX/TX-RX pins to normal mode);
- * no AT commands are needed on the controller side, which acts purely as
- * a receiver. The link is one-way (the node does not expect ACKs here).
+ * from remote DS18x20 sensor nodes. TWO frame formats are accepted:
+ *   - text (ESP-IDF node): "TT.TTT T<id>&\r\n"
+ *   - binary (Arduino node, LoRa.txt): <0x02 0xE3><payload>T<id>#
+ *     with payload = temperature "%02.3f", "ERR", or a control frame
+ *     ("X<id>" ack / "PR<id>" pairing) addressed to a node.
+ * This module owns the UART driver, a FreeRTOS task that accumulates bytes
+ * into frames, decodes them, forwards each valid (id, temperature) pair to
+ * sensor_manager via sensor_manager_lora_update(), and acknowledges the
+ * addressed node (text "ACK <id>&" or binary <0x02 0xE3>X<id>T9#).
  */
 #pragma once
 
@@ -22,12 +22,23 @@ extern "C" {
 #endif
 
 /* Initialise the UART and start the receiver task. Safe to call once from
- * app_main after sensor_manager_init(). */
+ * app_main after sensor_manager_init(). Also reads the E32 module registers
+ * and syncs the RF channel to HE_LORA_CHANNEL (LoRa.txt: both ends must use
+ * the same channel). */
 void lora_receiver_init(void);
 
 /* Pause (on=true) / resume (on=false) the rx task so the web test handler
  * can exclusively own the UART during an AT-query exchange. */
 void lora_receiver_test_mode(bool on);
+
+/* Read the E32 module's saved registers (C0 ADDH ADDL SPED CHAN OPTION) into
+ * out[6]. Returns false when the module does not answer. Exposed for the web
+ * diagnostics / channel-sync endpoints. */
+bool lora_module_read_params(uint8_t out[6]);
+
+/* Force the E32 module onto RF channel chan (0..83 => 410..493 MHz) and verify
+ * by read-back. Returns false when the module stays silent. */
+bool lora_channel_set(int chan);
 
 /* One detected LoRa device (unpaired "T00" announcement or a paired
  * node "TT.TTT T<n>&"). The UI shows all of them when pairing so the
@@ -41,7 +52,7 @@ typedef struct {
 /* Maximum nodes tracked for the pairing scanner (same as HE_MAX_SENSORS). */
 #define HE_PAIR_DESC_MAX  HE_MAX_SENSORS
 
-/* Verification window = 3 × the nominal node frame period (~3 × 6 s). */
+/* Verification window = 3 × the nominal node frame period (~3 × 21 s). */
 #define HE_UNPAIR_VERIFY_CYCLES  3
 #define HE_UNPAIR_VERIFY_SEC     (HE_UNPAIR_VERIFY_CYCLES * HE_LORA_FRAME_PERIOD_MS / 1000)
 
@@ -49,24 +60,21 @@ typedef struct {
  * lora_pair_request() to enumerate available devices. */
 void lora_pair_request(lora_node_desc_t *nodes, int *count, int max);
 
-/* Broadcast the pairing command "PAIR <id>&" to assign an id to the
- * unpaired node (id 1..HE_MAX_SENSORS). */
+/* Broadcast the binary pairing command to assign an id to the unpaired node
+ * (id 1..HE_MAX_SENSORS): <0x02 0xE3>PR<id>T9# (LoRa.txt, Arduino node).
+ * A node holding factory id 0 stores <id> on receipt. */
 void lora_pair_assign(int id);
 
-/* Broadcast "REPAIR <old> <new>&" — change the radio id of a defined
- * sensor (only the node currently holding <old> accepts). */
-void lora_repair_assign(int old, int id);
-
-/* Broadcast "RESET&" — tell the node(s) to erase the persisted radio id
- * and reboot unpaired (factory default). Used when deleting a sensor. */
-void lora_unpair_reset(void);
+/* Manually transmit a raw LoRa frame typed in the UI debug form. The frame
+ * is sent as typed ('&' appended when missing), repeated 6× so it lands in
+ * a node's RX window, and logged to the event log. */
+void lora_raw_send(const char *frame);
 
 /* ---- Pairing/unpair verification (async, non-blocking) ----
- * After a PAIR/RESET broadcast arm a verification window of
+ * After a PR broadcast arm a verification window of
  * HE_UNPAIR_VERIFY_CYCLES node cycles. The scanner watches whether the
- * node starts announcing the expected id (expect 0 = unpaired after
- * RESET; expect N after PAIR N). If the window elapses without seeing
- * it, the command failed — the UI then offers a force-delete fallback. */
+ * node starts announcing the expected id. If the window elapses without
+ * seeing it, the command failed. */
 void lora_unpair_verify_start(int expect_id, int window_s);
 /* 0 = idle, 1 = pending, 2 = confirmed (expected id seen), 3 = failed. */
 int  lora_unpair_verify_state(void);

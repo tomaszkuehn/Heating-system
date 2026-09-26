@@ -37,6 +37,12 @@ extern "C" {
 #define HE_LORA_UART_RX         GPIO_NUM_14    /* from module TXD          */
 #define HE_LORA_BAUD            9600
 #define HE_LORA_BUF_SIZE        256
+/* RF channel of the E32 module (LoRa.txt: the node and the controller must
+ * transmit on the SAME channel). freq = 410 + channel MHz, so 23 = 433 MHz,
+ * which is the E32-433T20D factory default shared by the sensor modules.
+ * lora_receiver_init() reads this register back at boot and rewrites it when
+ * a field-reconfigured module differs. */
+#define HE_LORA_CHANNEL         23             /* 433 MHz (E32 factory)    */
 /* Mode-control pins (AUX / TX-RX) on the E32 module. Moved off GPIO25/26
  * (RMII RXD0/RXD1) to safe output pins GPIO4/GPIO5. */
 #define HE_GPIO_LORA_AUX        GPIO_NUM_4    /* mode select (0=normal)   */
@@ -45,11 +51,12 @@ extern "C" {
 #define HE_LORA_MODE_CONFIG    1
 #define HE_LORA_RX_TASK_STACK   3072
 #define HE_LORA_LINE_MAX        48             /* max length of one frame  */
-/* Nominal period between radio frames from a sensor node (~5.5 s measured on
- * the air with the current node firmware). Used for loss-rate estimation.
- * (lora_receiver.h defines its own HE_LORA_FRAME_PERIOD_MS copy for header
- * users; keep the two in sync.) */
-#define HE_LORA_FRAME_PERIOD_MS 6000
+/* Nominal period between radio frames from a sensor node. Per LoRa.txt the
+ * node sends a measurement every 20 s plus a random 0..2 s delay, so the
+ * mean slot is ~21 s. Used for loss-rate estimation and the moving-average
+ * window. (lora_receiver.h defines its own HE_LORA_FRAME_PERIOD_MS copy for
+ * header users; keep the two in sync.) */
+#define HE_LORA_FRAME_PERIOD_MS 21000
 
 /* ---- Ethernet (WT32-ETH01 V1.4 — LAN8720 PHY) ----
  * RMII data pins are hardwired in the ESP32 silicon. 50 MHz clock from the

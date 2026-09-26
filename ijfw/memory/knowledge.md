@@ -31,3 +31,16 @@ tags: [lora, security, design, deferred, v2]
 ---
 <!-- hash:117a78040bef -->
 LoRa protocol v2 (AES-128-CTR + CMAC, anti-replay BOOT_ID/SEQ) DESIGNED but user said "NA RAZIE NIE WDRAŻAMY" — no implementation now. Design summary for future: binary frame [MAGIC 2][VER 1][BOOT_ID 2][SEQ 2][LEN 1][CIPHERTEXT][MAC 4], lean binary payload (int16 centi + uint8 id + uint8 flags) → 29 B for 1 probe, 45 B for 4 probes (fits 58 B E32 packet). Receiver anti-replay table (BOOT_ID→MAX_SEQ) per node, NVS persist every 32 frames, SEQ advance +32 on sensor boot; BOOT_ID rotates on SEQ wrap 65535 (~11.4 days at 15s cadence). Stats lora_ok/replay_rejected/mac_bad in /api/diagnostics. Key management: seed in code + POST /api/lora/key. ACK hardening with MAC deferred. User constraints: max 4 sensors; foreign LoRa frames are received but do NOT block own frames (crypto makes them harmless); FH/auto-hop deferred (v3, maybe never). Also decided: sensor node gets Sensor/ IDF firmware flashed via COM3 (replacing old Arduino sketch) — but only when v2 work starts. Current system running fine end-to-end with old text protocol.
+---
+type: decision
+summary: LoRa PAIR HMAC bug fixed: tag must cover nonce
+stored: 2026-09-26T09:39:26.996Z
+hash: 4429095bf9e5
+tags: [lora, pairing, hmac, esp32, bugfix]
+---
+<!-- hash:4429095bf9e5 -->
+LoRa pairing now works end-to-end. Root cause of "sensor się nie paruje": controller's pair_broadcast() computed the HMAC tag over "PAIR &lt;id&gt;" WITHOUT the nonce, while the sensor verified HMAC over "PAIR &lt;id&gt; &lt;nonce&gt;" — tags never matched (verified: recv tag == HMAC(k8,"PAIR 2") exactly). Fix in Heating/main/lora_receiver.c pair_broadcast(): build base="PAIR &lt;id&gt;", msg=base+" "+noncehex, tag=HMAC(msg), cmd=msg+" "+tag+"&". Sensor side (Sensor/main/main.c parse_pair) verifies msg = frame truncated at last space (tag excluded), tag = sp3+1. Key simplified to 8 bytes {0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88} in both lora_sec.c files (HMAC-SHA256, 8-byte truncated tag kept). Verified live: sensor log "paired as T02", "ACK confirmed", controller sees "22.43 T02&" and replies "ACK -&gt; T2", /api/state slot id=2 radio=2 eff=22.4. Note: pairing a radio id already claimed returns "radio id already in use" (400) — unpair the slot first. Also added: manual LoRa frame TX from UI (POST /api/lora/send, body=raw frame text, '&' auto-appended, repeated 6x; form in index.html Diagnostyka section, btnLoraSend/loraFrame in app.js). Config change: CONFIG_MBEDTLS_HARDWARE_SHA=n in both sdkconfig.defaults (hw SHA suspected of wrong tags earlier; kept off). Sensor flash requires manual BOOT+EN via esptool --before no-reset on COM3.
+
+**Why:** The controller signed only "PAIR &lt;id&gt;" (no nonce) while the sensor verified "PAIR &lt;id&gt; &lt;nonce&gt;"; with mbedtls hw-SHA suspicion ruled out, byte-level tag comparison confirmed the msg mismatch.
+
+**How to apply:** When LoRa pairing frames are rejected with "bad MAC", compare the exact signed message on both sides (controller tag input vs sensor verify input) — byte-for-byte, including the nonce. Tag must cover the nonce. Python reference: hmac.new(key, b'PAIR 2 &lt;nonce8hex&gt;', hashlib.sha256).hexdigest()[:16].

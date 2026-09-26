@@ -1114,10 +1114,10 @@ static esp_err_t h_lora_pair_get(httpd_req_t *req)
 
 /* ---- /api/lora/pair?id=N (POST) — assign radio id N to the unpaired node ----
  * Concept: every node ships FACTORY-PAIRED TO 0 (T00 announcements). Pairing
- * broadcasts "PAIR N&" which only a T00 node accepts; it then stores N in
- * its NVS and starts announcing Tn. Unpair broadcasts "RESET&" -> back to 0.
- * Only T00 nodes are pairable — a node already holding an id must go through
- * repair or unpair first. */
+ * broadcasts the binary <0x02 0xE3>PR<id>T9# frame which only a T00 node
+ * accepts; it then stores N in its NVS and starts announcing Tn.
+ * Only T00 nodes are pairable — a node already holding an id cannot be
+ * re-addressed over the air (factory reset via its BOOT button restores 0). */
 static esp_err_t h_lora_pair_post(httpd_req_t *req)
 {
     char vs[8];
@@ -1173,38 +1173,11 @@ static esp_err_t h_lora_pair_post(httpd_req_t *req)
     return send_text(req, "ok", 200);
 }
 
-/* ---- /api/lora/repair?from=N&to=M (POST) — change a defined sensor's
- * radio id. Only the node currently paired as N accepts the command. ---- */
-static esp_err_t h_lora_repair_post(httpd_req_t *req)
-{
-    char fs_[8], ts[8];
-    if (!qarg(req, "from", fs_, sizeof(fs_)) || !qarg(req, "to", ts, sizeof(ts)))
-        return send_text(req, "missing from/to", 400);
-    int from = atoi(fs_), to = atoi(ts);
-    if (from < 1 || from > HE_MAX_SENSORS || to < 1 || to > HE_MAX_SENSORS || from == to)
-        return send_text(req, "bad from/to", 400);
-    /* Update the sensor that holds radio id `from` to the new radio id. */
-    CFG_LOCK();
-    sensor_t *target = NULL;
-    for (int i = 0; i < s_cfg->sensor_count; i++)
-        if (s_cfg->sensors[i].radio_id == from) { target = &s_cfg->sensors[i]; break; }
-    if (target) {
-        target->radio_id = (uint8_t)to;
-        storage_save_config(s_cfg);
-    }
-    he_config_unlock();
-    lora_repair_assign(from, to);
-    return send_text(req, "ok", 200);
-}
-
 /* ---- /api/lora/unpair?id=N (POST) — delete a LoRa sensor ----
- * Broadcasts "RESET&" so the node returns to factory defaults (unpaired
- * T00 mode), then removes the sensor slot and re-normalises weights.
- * The reset is verified in the background: lora_unpair_verify_start()
- * arms a ~3-cycle window and the rx scanner watches whether the node
- * comes back announcing T00 (confirmed) or keeps its old id (failed).
- * The UI polls /api/lora/unpair/status and, on failure, may offer a
- * delete-without-unpair fallback via /api/lora/unpair/force. ---- */
+ * Removes the sensor slot and re-normalises weights. The node keeps its
+ * paired id (no over-the-air reset exists); to return it to factory
+ * default use its BOOT button (hold 5 s). A background verification is
+ * not possible without an over-the-air reset command. ---- */
 static esp_err_t h_lora_unpair_post(httpd_req_t *req)
 {
     char idstr[8];
@@ -1229,51 +1202,23 @@ static esp_err_t h_lora_unpair_post(httpd_req_t *req)
                         s_cfg->has_external ? &s_cfg->sensors[HE_MAX_SENSORS] : NULL);
     storage_save_config(s_cfg);
     he_config_unlock();
-    /* UART broadcast sleeps — must run outside the config lock. */
-    lora_unpair_reset();
-    /* Background verification: node should announce T00 within ~3 cycles. */
-    lora_unpair_verify_start(id, HE_UNPAIR_VERIFY_SEC);
     return send_text(req, "ok", 200);
 }
 
-/* ---- /api/lora/unpair/status (GET) — background unpair-verification ----
- * { "state":"idle|pending|confirmed|failed", "window":s } */
-static esp_err_t h_lora_unpair_status(httpd_req_t *req)
+/* ---- /api/lora/send (POST, body = raw frame text) — manual frame TX ----
+ * Debug helper: broadcasts the frame typed in the UI form over the LoRa
+ * UART. Free text, max HE_LORA_LINE_MAX chars ('&' appended if missing). */
+static esp_err_t h_lora_send(httpd_req_t *req)
 {
-    static const char *names[] = { "idle", "pending", "confirmed", "failed" };
-    int st = lora_unpair_verify_state();
-    char b[80];
-    snprintf(b, sizeof(b), "{\"state\":\"%s\",\"window\":%d}",
-             names[st & 3], HE_UNPAIR_VERIFY_SEC);
-    return send_json(req, b);
-}
-
-/* ---- /api/lora/unpair/force?id=N (POST) — delete WITHOUT factory reset ----
- * Used when the background verification failed (e.g. node out of range,
- * powered off): frees the sensor slot but the node keeps its paired id. */
-static esp_err_t h_lora_unpair_force(httpd_req_t *req)
-{
-    char idstr[8];
-    if (!qarg(req, "id", idstr, sizeof(idstr))) return send_text(req, "missing id", 400);
-    int id = atoi(idstr);
-    if (id < 1 || id > HE_MAX_SENSORS) return send_text(req, "id out of range", 400);
-    CFG_LOCK();
-    int found = -1;
-    for (int i = 0; i < s_cfg->sensor_count; i++)
-        if (s_cfg->sensors[i].radio_id == id) { found = i; break; }
-    if (found < 0) CFG_RET(send_text(req, "no such sensor", 400));
-    for (int i = found; i < s_cfg->sensor_count - 1; i++)
-        s_cfg->sensors[i] = s_cfg->sensors[i + 1];
-    s_cfg->sensor_count--;
-    memset(&s_cfg->sensors[s_cfg->sensor_count], 0, sizeof(sensor_t));
-    float wsum = 0;
-    for (int i = 0; i < s_cfg->sensor_count; i++) wsum += s_cfg->sensors[i].weight;
-    if (wsum > 0) for (int i = 0; i < s_cfg->sensor_count; i++) s_cfg->sensors[i].weight /= wsum;
-    sensor_manager_bind(s_cfg->sensors, s_cfg->sensor_count,
-                        s_cfg->has_external ? &s_cfg->sensors[HE_MAX_SENSORS] : NULL);
-    storage_save_config(s_cfg);
-    he_config_unlock();
-    lora_unpair_verify_clear();
+    char body[HE_LORA_LINE_MAX + 2];
+    read_body(req, body, sizeof(body));
+    if (!body[0]) return send_text(req, "empty frame", 400);
+    /* Reject control characters other than plain printable text. */
+    for (const char *c = body; *c; c++) {
+        if ((unsigned char)*c < 0x20 || (unsigned char)*c > 0x7e)
+            return send_text(req, "invalid characters", 400);
+    }
+    lora_raw_send(body);
     return send_text(req, "ok", 200);
 }
 
@@ -1349,6 +1294,34 @@ static esp_err_t h_lora_test(httpd_req_t *req)
             "check 4 wires + common GND, module VCC, module not T20S variant\"}");
     }
     p += snprintf(b + p, sizeof(b) - p, "}");
+    return send_json(req, b);
+}
+
+/* ---- /api/lora/config?chan=N (POST) — set the E32 RF channel ----
+ * LoRa.txt requires the controller and the sensor to transmit on the same
+ * channel (freq = 410 + channel MHz). Writes the module register (C0 cmd) and
+ * verifies by read-back. Without ?chan= it just reports the current channel. */
+static esp_err_t h_lora_config(httpd_req_t *req)
+{
+    char b[192];
+    char cs[8];
+    if (!qarg(req, "chan", cs, sizeof(cs))) {
+        uint8_t p[6];
+        if (!lora_module_read_params(p))
+            return send_json(req, "{\"ok\":false,\"err\":\"module silent\"}");
+        snprintf(b, sizeof(b),
+                 "{\"ok\":true,\"chan\":%d,\"freq_mhz\":%d,\"addr\":\"%02X%02X\",\"sped\":\"0x%02X\"}",
+                 p[4], 410 + p[4], p[1], p[2], p[3]);
+        return send_json(req, b);
+    }
+    int chan = atoi(cs);
+    if (chan < 0 || chan > 83) return send_text(req, "chan out of range (0..83)", 400);
+    if (!lora_channel_set(chan))
+        return send_json(req, "{\"ok\":false,\"err\":\"set/verify failed\"}");
+    snprintf(b, sizeof(b),
+             "{\"ok\":true,\"chan\":%d,\"freq_mhz\":%d,\"msg\":\"channel saved — "
+             "verify the sensor module uses the same channel\"}",
+             chan, 410 + chan);
     return send_json(req, b);
 }
 
@@ -1486,12 +1459,11 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_log_clear,  .user_ctx = NULL },
     { .uri = "/api/diagnostics", .method = HTTP_GET,  .handler = h_diag,      .user_ctx = NULL },
     { .uri = "/api/lora/test",   .method = HTTP_GET,  .handler = h_lora_test, .user_ctx = NULL },
+    { .uri = "/api/lora/config", .method = HTTP_POST, .handler = h_lora_config, .user_ctx = NULL },
     { .uri = "/api/lora/pair",   .method = HTTP_GET,  .handler = h_lora_pair_get,  .user_ctx = NULL },
     { .uri = "/api/lora/pair",   .method = HTTP_POST, .handler = h_lora_pair_post, .user_ctx = NULL },
-    { .uri = "/api/lora/repair", .method = HTTP_POST, .handler = h_lora_repair_post, .user_ctx = NULL },
     { .uri = "/api/lora/unpair", .method = HTTP_POST, .handler = h_lora_unpair_post, .user_ctx = NULL },
-    { .uri = "/api/lora/unpair/status", .method = HTTP_GET, .handler = h_lora_unpair_status, .user_ctx = NULL },
-    { .uri = "/api/lora/unpair/force", .method = HTTP_POST, .handler = h_lora_unpair_force, .user_ctx = NULL },
+    { .uri = "/api/lora/send", .method = HTTP_POST, .handler = h_lora_send,  .user_ctx = NULL },
     { .uri = "/api/ota",       .method = HTTP_POST, .handler = h_ota,         .user_ctx = NULL },
 };
 

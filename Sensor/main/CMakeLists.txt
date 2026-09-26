@@ -10,11 +10,13 @@ idf_component_register(
         "onewire.c"
         "ds18b20.c"
         "lora.c"
+        "lora_sec.c"
     INCLUDE_DIRS
         "."
     REQUIRES
         driver
         nvs_flash
+        mbedtls
     PRIV_REQUIRES
         esp_timer
 )
