@@ -141,6 +141,24 @@ tym samym kanale są obecnie ignorowane przez parser (wymagany format
 `TT.TTT T<id>&`) — planowane utwardzenie protokołu (MAC + anti-replay) jest
 zaprojektowane, ale jeszcze niewdrożone.
 
+#### Implementacja Arduino (`Sensor/LoRa_sensor.ino`) — protokół binarny
+
+Oprócz tekstowego sensora ESP-IDF (`Sensor/main/main.c`) istnieje równoległa
+implementacja Arduino (`Sensor/LoRa_sensor.ino`), która używa **binarnego**
+formatu ramek z magiciem `0x02 0xE3`:
+
+```
+<0x02 0xE3><payload>T<ID>#
+```
+
+- Pomiar: `02 E3 22.361 T4#` (payload = `22.361`, id=4)
+- Brak sondy: `02 E3 ERRT2#` (payload = `ERR`)
+- ACK: `02 E3 X2T9#` (payload = `X2`)
+- Parowanie: `02 E3 PR3T0#` (payload = `PR3`)
+
+Kontroler obsługuje oba protokoły (tekstowy ESP-IDF i binarny Arduino).
+Szczegóły w `LoRa.txt` (katalog główny repozytorium).
+
 ### Parowanie węzłów LoRa (dodanie czujnika / zmiana ID)
 
 Protokół radiowy (tekstowy, 433 MHz):

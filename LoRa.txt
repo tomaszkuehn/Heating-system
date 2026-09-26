@@ -1,0 +1,18 @@
+System składa sie z jednego kontrolera i kilku sensorow, maksimum 8 sztuk. Komunikacja odbywa sie przez LoRa.
+Format ramki to: <magic><payload>T<ID node># gdzie magic to dwa bajty o wartosciach w hex 02h i E3h a ID node to identyfikator node, dla kontrolera 9
+Standardowo sensor ma ID 0
+Kontroler ma ID 9
+Możliwe komunikaty
+1. Sensor->kontroler
+- pomiar temperatury: payload to wartosc float zamieniona na string string, format %02.3f
+2. kontroler->sensor
+- potwierdzenie otrzymania pomiaru temperatury: payload to 'X' z dodanym numerem sensora, ktory jest potwierdzany np. X2
+- parowanie: payload to PR<ID> np. PR3 ktory powoduje, ze jesli sesnsor ma ID==0 to ustawia ID na podane parowanie
+
+Pomiar temperatury ma byc wysylany co 20 sekund plus losowe opoznienie od 0 do 2 sekund. Jesli w ciagu 2s od wyslania pomiaru nie bedzie potwierdzenia sesnor podnosi moc wyjsciowa o 2dB. Po pomyslnym potwierdzeniu moc wyjsciowa jest obnizana do poziomu standardowego.
+
+Przy duzym ruchu w eterze w buforze modułu LoRa moze byc kilka ramek, zarowno sesnor jak i kontroler musza byc w stanie odczytac kazda z tych ramek osobno. W przypadku ramek nie pasujacych do wzorca sa one ignorowane (ramki zdeformowane lub pochodzace z innych sieci).
+15. Jeśli sensor ID2 odbierze jednocześnie trzy ramki (magic = 2 bajty 0x02 0xE3, nie tekst "02E3"): 1:binary `02 E3 X1 T9 #`, 2:binary `02 E3 X2 T9 #`, 3:binary `02 E3 22.361 T4 #` to ignoruje ramki 1 i 3 i akceptuje ramkę 2 jako potwierdzenie wysłanej wcześniej ramki pomiaru temperatury.
+
+Sensor musi byc zabezpieczony na wypadek niespodziewanych awarii. Oprócz zwiększania mocy w przypadku braku odpowiedzi ma mieć zaimplementowany watchdog, oraz cykliczny reboot w razie braku potwierdzeń od kontrolera.
+Sensor działa na bazie modułu ESP32-WROOM i powinien mieć funkcję resetowania do fabrycznego ID0 po naciśnięciu i przytrzymaniu przycisku BOOT prze więcej niż 5s, jako ułatwienie LED na module powinien sie zaswiecić po 5 sekundach trzymania przycisku.

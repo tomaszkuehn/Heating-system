@@ -35,11 +35,32 @@ TT.TTT T<NN>&<CR><LF>
 
 np. `21.500 T01&` dla czujnika 1 = 21,50 °C. Brak odczytu → linia `ERR T&`.
 
+## Alternatywna implementacja Arduino (`LoRa_sensor.ino`)
+
+Katalog `Sensor/` zawiera równoległą implementację Arduino (`LoRa_sensor.ino`)
+opartą na bibliotekach Arduino (`OneWire`, `DallasTemperature`,
+`EspSoftwareSerial`). Jest to samodzielny szkic wgrany przez `arduino-cli` na
+moduł ESP32 + E32-433T20D + DS18B20.
+
+Różnice względem wersji ESP-IDF:
+
+- Ramki **binarne** z magiciem `0x02 0xE3` (`<magic><payload>T<ID>#`)
+  zamiast tekstowego `TT.TTT T<id>&`
+- Wysyłka przez `LoRa.write()` (binarnie), nie `Serial.print` tekst
+- Parsowanie odbioru na bajtach (`parseFrame(frame, length, ...)`) zamiast
+  `strstr` po tekście
+- Resynchronizacja po overflow bufora polega na przeszukiwaniu sekwencji
+  bajtów `{0x02, 0xE3}`
+- Specyfikacja: `LoRa.txt` (katalog główny repozytorium)
+- Flash: `arduino-cli compile --fqbn esp32:esp32:esp32`, a następnie
+  `arduino-cli upload -p COM3 --fqbn esp32:esp32:esp32` (wymaga ręcznego
+  BOOT+EN)
+
 ## Zachowanie względem oryginału
 
 Oryginał (`DS18x20_Temperature.ino`, Arduino) był pojedynczym szkicem:
 SoftwareSerial, DallasTemperature, blokująca pętla `delay(1)` i restart
-przez 20 s oczekiwania na watchdog. Wersja ESP-IDF:
+przez 20 s oczekiwanie na watchdog. Wersja ESP-IDF:
 
 - 1-Wire bit-banging bez bibliotek Arduino (brak zależności od `OneWire`/`DallasTemperature`)
 - LoRa na sprzętowym UART (zamiast SoftwareSerial)
