@@ -23,7 +23,8 @@ async function doLogin() {
     const r = await fetch('/api/login', { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user: $('authUser').value, pass: $('authPass').value }) });
-    if (r.ok) { hideAuth(); await refresh(); await loadDiag(); await loadLog(); }
+    if (r.ok) { hideAuth(); await refresh(); await load24h(); await loadDaily();
+      await loadDiag(); await loadLog(); populateSensorToggles(lastState && lastState.sensors); }
     else if (r.status === 429) $('authErr').textContent = 'Za dużo prób — spróbuj za minutę';
     else $('authErr').textContent = 'Błędny login lub hasło';
   } catch (e) { $('authErr').textContent = 'Brak połączenia'; }
@@ -56,6 +57,47 @@ function post(path, body, isJson) {
   return api(path, { method: 'POST', body: isJson ? JSON.stringify(body) : body,
     headers: isJson ? { 'Content-Type': 'application/json' } : {} });
 }
+/* ---- Favicon: mini "Status pieca" (boiler-circle) in the browser tab ----
+ * Drawn on an off-screen 64x64 canvas and swapped as the tab icon whenever
+ * the boiler state changes. States mirror the dashboard tile exactly:
+ * disabled = gray circle with ✕, heating = red-glow circle with 🔥,
+ * idle = blue circle with an off-colored dot. */
+let _favState = null;
+function updateFavicon(s) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const mode = s.disabled ? 'off' : (s.heating ? 'on' : 'idle');
+  if (mode === _favState) return;
+  _favState = mode;
+  /* Background (dark, matches the page) + circle, as in the tile's CSS. */
+  x.fillStyle = '#0b0e14'; x.fillRect(0, 0, 64, 64);
+  const cx = 32, cy = 32, r = 26;
+  x.lineWidth = 6;
+  if (mode === 'on') {
+    x.fillStyle = '#4a1018';
+    x.strokeStyle = '#ef4444';
+    x.shadowColor = 'rgba(239,68,68,.8)'; x.shadowBlur = 12;
+  } else if (mode === 'off') {
+    x.fillStyle = '#1a1c20'; x.strokeStyle = '#555';
+  } else {
+    x.fillStyle = '#10253d'; x.strokeStyle = '#3b82f6';
+  }
+  x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fill(); x.stroke();
+  x.shadowBlur = 0;
+  /* Glyph inside the circle. */
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  if (mode === 'on') {
+    x.font = '30px serif'; x.fillText('🔥', cx, cy + 1);
+  } else if (mode === 'off') {
+    x.fillStyle = '#888'; x.font = 'bold 26px sans-serif'; x.fillText('✕', cx, cy + 1);
+  } else {
+    x.fillStyle = '#3b82f6'; x.beginPath();
+    x.arc(cx, cy, 7, 0, Math.PI * 2); x.fill();
+  }
+  let link = document.querySelector('link[rel="icon"]');
+  link.href = c.toDataURL('image/png');
+}
+
 function fmtT(v) { return (v === null || v === undefined || v <= -98) ? '--' : v.toFixed(2) + '°C'; }
 function fmtUp(ms) {
   const s = Math.floor(ms / 1000);
@@ -156,6 +198,8 @@ function renderDashboard(s) {
       bs.textContent = 'Nie grzeje';
     }
   }
+  /* Tab icon mirrors the boiler tile (heating/idle/disabled). */
+  updateFavicon(s);
   /* Kill button: toggle label + color, moved to end of button row. */
   $('btnKill').textContent = s.disabled ? 'Włącz ogrzewanie' : 'Wyłącz ogrzewanie';
   $('btnKill').className = s.disabled ? 'btn' : 'btn btn-danger';
@@ -824,7 +868,11 @@ function draw24h() {
 }
 
 async function load24h() {
-  samples24 = await api('/api/samples') || [];
+  const s = await api('/api/samples');
+  /* On fetch failure keep the previous samples (chart stays visible) and let
+   * the periodic reload retry — an empty draw would blank the chart for 8 s. */
+  if (s === null) return;
+  samples24 = s;
   draw24h();
 }
 
