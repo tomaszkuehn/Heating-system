@@ -101,6 +101,29 @@ static void repair_config(system_config_t *c)
     if (c->fault_grace_sec < 60)  c->fault_grace_sec  = HE_DEFAULT_FAULT_GRACE_SEC;
     if (c->max_on_sec < 60)       c->max_on_sec       = HE_DEFAULT_MAX_ON_SEC;
     if (c->max_on_break_sec < 60) c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    /* Upper-bound clamps: a same-size garbage NVS blob (e.g. a timestamp
+     * landed in max_on_sec) passes the <60 checks above, but the *1000 ms
+     * conversion then overflows int32 to a negative value — max-on trips on
+     * the first heating tick (1 s ON / break chatter). Cap at sane maxima. */
+    if (c->fault_grace_sec > 86400)  c->fault_grace_sec  = HE_DEFAULT_FAULT_GRACE_SEC;
+    if (c->max_on_sec > 86400)       c->max_on_sec       = HE_DEFAULT_MAX_ON_SEC;
+    if (c->max_on_break_sec > 86400) c->max_on_break_sec = HE_DEFAULT_MAX_ON_BREAK_SEC;
+    /* Pump overrun (seed defaults 5/120/600): same overflow hazard in the
+     * *1000 conversions in heating_output_pump_overrun_tick. */
+    if (c->pump.impulse_seconds < 1 || c->pump.impulse_seconds > 600)
+        c->pump.impulse_seconds = 5;
+    if (c->pump.period_seconds < 10 || c->pump.period_seconds > 3600)
+        c->pump.period_seconds = 120;
+    if (c->pump.total_seconds < 0 || c->pump.total_seconds > 86400)
+        c->pump.total_seconds = 600;
+    /* Emergency duty cycle (seed defaults 900/3600): cap garbage and keep
+     * on <= period so the duty ratio stays in [0,1]. */
+    if (c->emergency.on_seconds < 0 || c->emergency.on_seconds > 86400)
+        c->emergency.on_seconds = HE_DEFAULT_EMERGENCY_ON_SEC;
+    if (c->emergency.period_seconds < 0 || c->emergency.period_seconds > 86400)
+        c->emergency.period_seconds = HE_DEFAULT_EMERGENCY_PERIOD_SEC;
+    if (c->emergency.on_seconds > c->emergency.period_seconds)
+        c->emergency.on_seconds = c->emergency.period_seconds;
     /* User-configurable hysteresis timing: an upgraded device zero-fills these
      * tail fields to 0. Below the floor they would enable instant toggling
      * (relay chatter); above the ceiling they stall heating. Reset to default. */

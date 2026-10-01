@@ -645,6 +645,7 @@ function drawSeries(cv, series, labels, colors) {
  * scrolls left as time advances; system + external plotted by timestamp, with
  * the daily profile ON/OFF band overlaid and an hour scale on the X axis. */
 let samples24 = [];   /* cached rows [ts,sys,ext,heat,state,s0..s5] */
+let lastR24 = null;     /* geometry + rows stashed by render24 for the hover crosshair */
 
 function render24(cv, rows, profile, sensors) {
   const winH = chartZoomH;  /* current zoom level */
@@ -795,6 +796,9 @@ function render24(cv, rows, profile, sensors) {
   /* Expose for the dashboard. */
   window._lastHeatMins = heatMins;
 
+  /* Stash geometry + data for the hover crosshair (drawn on mousemove). */
+  lastR24 = { rows, t0, t1, lo, hi, W, H, padL, padR, padT, padB, internal, healthyCols };
+
   /* legend */
   ctx.font = '11px sans-serif';
   let lx = padL;
@@ -809,6 +813,75 @@ async function load24h() {
   samples24 = await api('/api/samples') || [];
   draw24h();
 }
+
+/* ---- hover crosshair on the 24h chart ----
+ * Dashed vertical + horizontal lines under the cursor: indicated time (HH:MM)
+ * at the top of the vertical line, axis temperature at the right of the
+ * horizontal line. Redraws the cached chart, then overlays. */
+let r24HoverX = null;   /* cursor in logical px, null when outside the plot */
+let r24HoverY = null;
+let r24HoverRaf = 0;
+
+function drawR24Crosshair() {
+  r24HoverRaf = 0;
+  const g = lastR24, cv = $('chart24');
+  if (!g || !cv) return;
+  render24(cv, g.rows, lastState && lastState.profile, lastState && lastState.sensors);
+  if (r24HoverX === null || r24HoverY === null) return;
+  const { t0, t1, lo, hi, W, H, padL, padR, padT, padB } = g;
+  if (r24HoverX < padL || r24HoverX > W - padR) return;
+  const px = r24HoverX;
+  const py = Math.min(Math.max(r24HoverY, padT), H - padB);
+  const ctx = cv.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.strokeStyle = '#8a93a3'; ctx.lineWidth = 1; ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.moveTo(px, padT); ctx.lineTo(px, H - padB);
+  ctx.moveTo(padL, py); ctx.lineTo(W - padR, py);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = '11px monospace';
+  /* Time label (HH:MM) at the top of the vertical line. */
+  const ts = t0 + (px - padL) * (t1 - t0) / (W - padL - padR);
+  const d = new Date(ts * 1000);
+  const ttxt = (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
+  const ttw = ctx.measureText(ttxt).width;
+  const ttx = Math.min(Math.max(px - ttw / 2, padL), W - padR - ttw);
+  ctx.fillStyle = 'rgba(10,13,18,0.85)';
+  ctx.fillRect(ttx - 3, padT + 1, ttw + 6, 15);
+  ctx.fillStyle = '#e7ecf3';
+  ctx.fillText(ttxt, ttx, padT + 13);
+  /* Temperature label (axis value) at the right of the horizontal line. */
+  const v = lo + (H - padB - py) * (hi - lo) / (H - padT - padB);
+  const vtxt = v.toFixed(1) + '°C';
+  const vtw = ctx.measureText(vtxt).width;
+  const vtx = W - padR - vtw - 5;
+  let vty = py - 6;
+  if (vty < padT + 12) vty = py + 16;
+  ctx.fillStyle = 'rgba(10,13,18,0.85)';
+  ctx.fillRect(vtx - 3, vty - 12, vtw + 6, 15);
+  ctx.fillStyle = '#e7ecf3';
+  ctx.fillText(vtxt, vtx, vty);
+}
+
+(function () {
+  const cv = $('chart24'); if (!cv) return;
+  const pos = (e) => {
+    if (!lastR24) { r24HoverX = r24HoverY = null; return; }
+    const r = cv.getBoundingClientRect();
+    r24HoverX = (e.clientX - r.left) * lastR24.W / r.width;
+    r24HoverY = (e.clientY - r.top) * lastR24.H / r.height;
+  };
+  cv.addEventListener('mousemove', (e) => {
+    pos(e);
+    if (!r24HoverRaf) r24HoverRaf = requestAnimationFrame(drawR24Crosshair);
+  });
+  cv.addEventListener('mouseleave', () => {
+    r24HoverX = r24HoverY = null;
+    if (!r24HoverRaf) r24HoverRaf = requestAnimationFrame(drawR24Crosshair);
+  });
+})();
 
 function drawEnergyBars(cv, data) {
   if (!data || !data.length) return;

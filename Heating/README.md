@@ -321,6 +321,12 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
 - **Wybór czujników na wykresie** — kolorowe checkboxy z nazwą czujnika
   (w jego kolorze linii) pozwalają pokazać/ukryć poszczególne czujniki
   wewnętrzne bez przeładowania strony. Domyślnie wszystkie widoczne.
+- **Celownik (crosshair) na wykresie 24 h** — najechanie kursorem na pole
+  wykresu rysuje dwie przerywane linie: pionową i poziomą. Na górze pionowej
+  pokazywany jest wskazywany czas (HH:MM), po prawej poziomej — temperatura
+  z osi. Linie znikają po zjechaniu kursora z wykresu. Uwaga: po aktualizacji
+  OTA przeglądarka może trzymać stary `app.js` w cache — potrzebny twardy
+  refresh (Ctrl+Shift+R).
 - **Health check czujników** — w tabeli czujników kolumna **Health** z kolorową
   kropką: 🟢 zielona = dane napływają bez zakłóceń (straty ≤ 30%), 🟡 żółta =
   > 30% oczekiwanych ramek radiowych gubionych w oknie pomiarowym, 🔴 czerwona =
@@ -430,6 +436,17 @@ czas przerwy (wraz z blokadą antyoscylacyjną na początku `control_tick()`).
 W `hysteresis_decision()` warunek `s_max_on_break_ms > 0` wymusza `false`
 niezależnie od progu `on_temp` — przerwa jest absolutna. Gdy `s_on_ms` przekroczy
 `max_on_sec`, ustawiane jest `s_max_on_break_ms = max_on_break_sec * 1000`.
+
+**Górne klampy naprawcze (`repair_config()` w `main.c`):** blob NVS o poprawnym
+rozmiarze, lecz ze śmieciowymi wartościami (np. timestamp w polu `max_on_sec`),
+przechodzi dolne kontrole `< 60`, ale konwersja `*1000` przepełnia int32 do
+wartości ujemnej — max-on wyłącza grzanie w pierwszym ticku (objaw: 1 s ON /
+~122 s OFF, w próbkach minutowych aliasowane do „załączenia na chwilę co
+godzinę"). Dlatego limity mają też górne granice: `max_on_sec`,
+`max_on_break_sec`, `fault_grace_sec` ≤ 86400, pompa 1–600 / 10–3600 / 0–86400 s,
+emergency 0–86400 s z `on ≤ period`; poza zakresem → wartość domyślna. Repair
+działa na kopii w RAM przy starcie (NVS zostaje nietknięty, naprawiany
+deterministycznie co boot).
 
 **Karencja awarii:** parametr zastąpił stałą `s_grace_ms = 300000` w
 `fault_manager.c` — `fault_manager_observe()` pobiera go z `s_cfg->fault_grace_sec`

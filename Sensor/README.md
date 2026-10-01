@@ -77,21 +77,27 @@ przez 20 s oczekiwanie na watchdog. Wersja ESP-IDF:
 - watchdog, osobne zadanie FreeRTOS, strukturalne logi (`ESP_LOG`)
 - obsługa wielu czujników (enumeracja SEARCH_ROM) zamiast jednego
 
-## Znany błąd — brak akceptacji ACK (implementacja Arduino)
+## Naprawiony błąd — brak akceptacji ACK (implementacja Arduino)
 
 W `Sensor/LoRa_sensor.ino` (wersja Arduino) potwierdzenie kontrolera
-(`02 E3 X<id>T9#`) **nie jest** przyjmowane, mimo że ramka dociera do modułu
-węzła poprawnie. Skutek: po ~120 s od ostatniego ACK węzeł restartuje się
+(`02 E3 X<id>T9#`) **nie było** przyjmowane, mimo że ramka docierała do modułu
+węzła poprawnie. Skutek: po ~120 s od ostatniego ACK węzeł restartował się
 (`No acknowledgement for too long, restarting`), a `Temperature measurement
-acknowledged` nigdy się nie loguje.
+acknowledged` nigdy się nie logowało.
 
-Przyczyna: w `loop()` znacznik czasu jest pobierany **przed** `sendMeasurement()`,
-które wewnątrz ustawia `lastSendAt = millis()` (później o czas konwersji
-DS18B20). Sprawdzenie `awaitingAck && now - lastSendAt >= ACK_TIMEOUT_MS`
-liczy się na `uint32_t` z `now < lastSendAt` → niedomknięcie (underflow
-~4,29e9), więc okno ACK zamyka się natychmiast i żadne potwierdzenie nie jest
-przyjmowane. Poprawka wymaga ponownego pobrania `now` przed sprawdzeniem ACK
-(1 linia). **Nie naprawiano** — firmware węzła pozostaje bez zmian.
+Przyczyna: w `loop()` znacznik czasu był pobierany **przed** `sendMeasurement()`,
+które wewnątrz ustawia `lastSendAt = millis()`. Sprawdzenie
+`awaitingAck && now - lastSendAt >= ACK_TIMEOUT_MS` liczyło się na `uint32_t`
+z `now < lastSendAt` → niedomknięcie (underflow ~4,29e9), więc okno ACK
+zamykało się natychmiast.
+
+**Naprawione**: `now = millis()` po `sendMeasurement()` + porównanie ze znakiem
+(`(int32_t)(now - lastSendAt)`). Zweryfikowane na urządzeniu (COM3):
+`measurement acknowledged` po każdym ACK, brak restartów. Wgrane przez
+`arduino-cli compile/upload --fqbn esp32:esp32:esp32` (wymaga ręcznego BOOT+EN;
+pusty flash sam wchodzi w download mode). Uwaga: flashowanie czyści NVS —
+węzeł wraca do fabrycznego ID 0 i wymaga ponownego parowania
+(`POST /api/lora/pair?id=N` po uprzednim `unpair`, jeśli slot zajęty).
 
 Wersja ESP-IDF (`Sensor/main/main.c`) ma osobne okno odbioru ACK i tego błędu
 nie wykazuje.
