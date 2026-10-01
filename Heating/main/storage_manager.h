@@ -84,6 +84,12 @@ typedef struct {
     /* ---- Config-layout version: v1 blobs (pre radio_id) short-read here.
      * repair_config() uses it to default radio_id = id on upgrade. ---- */
     uint8_t             cfg_ver;                   /* HE_CFG_VER_RADIO_ID = 2 */
+    /* ---- Ignore heating-effectiveness faults (NO/LOW_HEAT_RISE).
+     * Tail-appended: older blobs zero-fill to false (= current behavior).
+     * When true, fault_manager never raises heat-rise faults and releases
+     * a latched one — for installations where the rise model doesn't apply
+     * (e.g. very slow floor heating). Set via /api/limits. */
+    bool                ignore_heat_rise;
 } system_config_t;
 
 /* One minute sample record (all active sensors + system + external). */

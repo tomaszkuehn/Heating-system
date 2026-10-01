@@ -99,6 +99,16 @@ typedef struct {
 
 static unpair_verify_t s_unpair = { .state = UNPAIR_IDLE };
 
+/* Cumulative radio-frame diagnostics (see lora_link_stats). */
+static uint32_t s_rx_garbage = 0;
+static uint32_t s_rx_rejected = 0;
+
+void lora_link_stats(uint32_t *garbage, uint32_t *rejected)
+{
+    if (garbage) *garbage = s_rx_garbage;
+    if (rejected) *rejected = s_rx_rejected;
+}
+
 /* Called from process_line() on every fresh announcement. */
 static void unpair_verify_note(int id)
 {
@@ -320,6 +330,7 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
     }
     if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
         ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
+        s_rx_rejected++;
         return;
     }
     s_pair_nodes[id].id = id;
@@ -366,6 +377,7 @@ static void process_line(const char *line)
     float temp;
     if (!parse_line(line, &id, &temp)) {
         ESP_LOGW(TAG, "malformed line: %s", line);
+        s_rx_garbage++;
         return;
     }
 
@@ -389,6 +401,7 @@ static void process_line(const char *line)
 
     if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
         ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
+        s_rx_rejected++;
         return;
     }
 

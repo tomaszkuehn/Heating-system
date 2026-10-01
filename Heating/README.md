@@ -452,6 +452,13 @@ deterministycznie co boot).
 `fault_manager.c` — `fault_manager_observe()` pobiera go z `s_cfg->fault_grace_sec`
 i używa do oceny `NO_HEAT_RISE` oraz `LOW_HEAT_RISE`.
 
+**Ignorowanie heating-rise:** checkbox w karcie limitów (`ignore_heat_rise`,
+`POST /api/limits`, tail-appended w NVS — domyślnie wyłączone). Gdy włączony,
+`fault_manager` w ogóle nie ocenia skuteczności grzania i od razu zwalnia
+ewentualnie zatrzaśnięty `NO/LOW_HEAT_RISE` (sam nie zniknie, bo zatrzask trzyma
+przekaźnik OFF). Przeznaczony dla instalacji, gdzie model wzrostu nie ma sensu
+(np. bardzo wolne ogrzewanie podłogowe) — grzanie nigdy nie staje z tego powodu.
+
 ## Zdarzenia obsługiwane przez system
 
 Dla każdego zdarzenia opisano: **warunek wystąpienia**, **sposób zakończenia**
@@ -523,9 +530,17 @@ uwzględnia wyłącznie czujniki o statusie `OK` lub `SIMULATED`.
   tylko odświeża znacznik czasu; normalny odstęp → `expected = span / 21 s`,
   `missed = expected − interwały`, `loss_pct = 100·missed/(missed+interwały)`.
   Gdy przez całe okno (8·21 s) nie ma przyjęcia, `loss` forsowane jest do 100%.
-  Czujnik wyłączony zeruje bookkeeping. Wynik dostępny w `/api/state` jako
-  `"loss"` (procent) i `"rx"` (bool: czy czujnik jest zasilany radiem) —
-  panel zamienia to na kolor kropki Health (żółta przy >30%).
+   Czujnik wyłączony zeruje bookkeeping. Wynik dostępny w `/api/state` jako
+   `"loss"` (procent) i `"rx"` (bool: czy czujnik jest zasilany radiem) —
+   panel zamienia to na kolor kropki Health (żółta przy >30%).
+- **Długookresowa diagnostyka łącza** (liczniki od startu sterownika, tylko RAM):
+  per slot przyjęte ramki (`lt_rx`: OK + ERR) kontra sloty MISS (`lt_miss`) —
+  w `/api/state` jako `"lt_rx"`/`"lt_miss"`, w UI jako **Σ %** pod kropką Health
+  i w nagłówku panelu Bufor. Globalnie (`"lora_garbage"`, `"lora_rejected"`):
+  linie nieczytelne dla parsera (szum RF, kolizje, urwane dane UART) oraz ramki
+  poprawne składniowo, lecz odrzucone (temperatura poza zakresem). Rozróżnienie
+  cisza / śmieci / odrzut mówi, czy ramka nie wyszła z węzła, zderzyła się
+  w eterze, czy padł pomiar na węźle.
 
 #### `QUAL_WINDOW_OPEN` — wykrycie otwartego okna (spec 6.1)
 - **Warunek:** lokalny szybki spadek — `drop > 1,5 °C` względem bazy **oraz**

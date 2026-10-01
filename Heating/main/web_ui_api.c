@@ -481,6 +481,8 @@ static esp_err_t h_state(httpd_req_t *req)
                 edname, sizeof(edname));
     int64_t now_us = esp_timer_get_time();
     int64_t now_unix = (int64_t)time(NULL);
+    uint32_t lora_garbage = 0, lora_rejected = 0;
+    lora_link_stats(&lora_garbage, &lora_rejected);
     p += snprintf(b + p, sizeof(b) - p,
         "{\"state\":\"%s\",\"heating\":%s,\"health\":%s,\"system\":%.2f,"
         "\"external\":%.2f,\"fault\":\"%s\",\"uptime\":%u,\"sim\":%s,"
@@ -490,7 +492,9 @@ static esp_err_t h_state(httpd_req_t *req)
         "\"flash_nvs_writes\":%lu,\"flash_fs_kb\":%lu,"
         "\"fault_grace_sec\":%d,\"max_on_sec\":%d,\"max_on_break_sec\":%d,"
         "\"min_on_sec\":%d,\"min_off_sec\":%d,\"anti_osc_lock_sec\":%d,"
+        "\"ignore_heat_rise\":%s,"
         "\"time_synced\":%s,\"time_now\":%lld,\"device_ip\":\"%s\","
+        "\"lora_garbage\":%u,\"lora_rejected\":%u,"
         "\"sensors\":[",
         sname(snap.state), snap.heating_active ? "true" : "false",
         snap.health_ok ? "true" : "false",
@@ -507,26 +511,31 @@ static esp_err_t h_state(httpd_req_t *req)
         (unsigned long)fw.nvs_commits, (unsigned long)fw.fs_kb_written,
         s_cfg->fault_grace_sec, s_cfg->max_on_sec, s_cfg->max_on_break_sec,
         s_cfg->min_on_sec, s_cfg->min_off_sec, s_cfg->anti_osc_lock_sec,
+        s_cfg->ignore_heat_rise ? "true" : "false",
         he_time_valid() ? "true" : "false",
         (long long)now_unix,
-        network_device_ip());
+        network_device_ip(),
+        (unsigned)lora_garbage, (unsigned)lora_rejected);
 
     for (int i = 0; i < s_cfg->sensor_count && p + 120 < (int)sizeof(b); i++) {
         sensor_t *s = &s_cfg->sensors[i];
         int age_s = s->last_update_ms ? (int)((now_us / 1000 - s->last_update_ms) / 1000) : 999;
         char ename[HE_NAME_LEN * 6 + 1];
         json_escape(s->name, ename, sizeof(ename));
+        uint32_t lt_rx = 0, lt_miss = 0;
+        sensor_manager_link_stats(s->id, &lt_rx, &lt_miss);
         p += snprintf(b + p, sizeof(b) - p,
             "%s{\"id\":%d,\"radio_id\":%d,\"name\":\"%s\",\"active\":%s,\"weight\":%.3f,"
             "\"calib\":%.2f,\"comfort\":%.2f,\"quality\":\"%s\",\"eff\":%.2f,"
             "\"raw\":%.2f,\"sim\":%s,\"window\":%s,\"last_seen\":%d,"
-            "\"loss\":%.0f,\"rx\":%s}",
+            "\"loss\":%.0f,\"rx\":%s,\"lt_rx\":%u,\"lt_miss\":%u}",
             i ? "," : "", s->id, s->radio_id, ename, s->active ? "true" : "false",
             s->weight, s->calib_offset, s->comfort_offset, sensor_quality_name(s->quality),
             he_isnan(s->last_effective) ? -99.0f : s->last_effective,
             he_isnan(s->last_raw) ? -99.0f : s->last_raw,
             s->simulated ? "true" : "false", s->window_open ? "true" : "false",
-            age_s, (double)s->loss_pct, s->rx_count > 0 ? "true" : "false");
+            age_s, (double)s->loss_pct, s->rx_count > 0 ? "true" : "false",
+            (unsigned)lt_rx, (unsigned)lt_miss);
     }
     if (s_cfg->has_external) {
         sensor_t *e = &s_cfg->sensors[HE_MAX_SENSORS];
@@ -982,6 +991,9 @@ static esp_err_t h_limits(httpd_req_t *req)
         s_cfg->min_off_sec = v;
     if (json_int(body, "anti_osc_lock_sec", &v) && v >= HE_ANTIOSC_FLOOR && v <= 600)
         s_cfg->anti_osc_lock_sec = v;
+    bool ign;
+    if (json_bool(body, "ignore_heat_rise", &ign))
+        s_cfg->ignore_heat_rise = ign;
     storage_save_config(s_cfg);
     CFG_RET(send_text(req, "ok", 200));
 }

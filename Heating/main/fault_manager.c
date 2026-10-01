@@ -135,8 +135,19 @@ void fault_manager_observe(const fault_context_t *ctx)
     int grace_ms = (s_cfg && s_cfg->fault_grace_sec > 0)
                    ? s_cfg->fault_grace_sec * 1000 : 300000;
 
+    /* Opt-out for installations where the rise model doesn't apply (e.g. very
+     * slow floor heating): never raise heat-rise faults, and release a
+     * latched one (it can't self-clear — the latched fault holds the relay
+     * OFF, so the effectiveness check below would never run again). */
+    bool ignore_rise = s_cfg && s_cfg->ignore_heat_rise;
+    if (ignore_rise &&
+        (s_fault == FAULT_NO_HEAT_RISE || s_fault == FAULT_LOW_HEAT_RISE)) {
+        fault_manager_clear();
+    }
+
     /* --- Heating effectiveness (only while heating, after grace) --- */
-    if (ctx->heating_active && !he_isnan(ctx->system_temp) && !he_isnan(s_heat_start_temp)) {
+    if (!ignore_rise &&
+        ctx->heating_active && !he_isnan(ctx->system_temp) && !he_isnan(s_heat_start_temp)) {
         int64_t since_us = esp_timer_get_time() - s_heat_start_us;
         if (since_us > grace_ms * 1000LL) {
             float minutes = (float)(since_us / 1000) / 60000.0f;

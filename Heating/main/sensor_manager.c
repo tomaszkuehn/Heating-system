@@ -42,6 +42,19 @@ typedef struct {
 
 static meas_buf_t s_meas[HE_MAX_SENSORS + 1];
 
+/* Long-term link counters, indexed like s_meas (1..HE_MAX_SENSORS).
+ * s_lt_rx = accepted radio frames (OK + ERR), s_lt_miss = MISS slots.
+ * Cumulative since boot; a re-pair keeps counting under the same logical
+ * slot, so the % reflects the slot's whole uptime history. */
+static uint32_t s_lt_rx[HE_MAX_SENSORS + 1];
+static uint32_t s_lt_miss[HE_MAX_SENSORS + 1];
+
+void sensor_manager_link_stats(int id, uint32_t *rx, uint32_t *miss)
+{
+    if (rx) *rx = (id >= 0 && id <= HE_MAX_SENSORS) ? s_lt_rx[id] : 0;
+    if (miss) *miss = (id >= 0 && id <= HE_MAX_SENSORS) ? s_lt_miss[id] : 0;
+}
+
 /* Event timestamps: real unix time once SNTP has synced, else uptime seconds
  * (same convention the event log uses so the UI can label an unsynced clock). */
 static uint32_t meas_now(void)
@@ -86,6 +99,7 @@ static void meas_tick(int idx)
     if (b->next_slot_ms == 0) { b->next_slot_ms = now + HE_LORA_FRAME_PERIOD_MS; return; }
     if ((int32_t)(now - (b->next_slot_ms + HE_LORA_FRAME_PERIOD_MS / 2)) < 0) return;
     meas_push(idx, HE_MEAS_MISS, he_nan());
+    s_lt_miss[idx]++;
 }
 
 int sensor_manager_get_buffer(int id, he_meas_slot_t *out, int max)
@@ -181,6 +195,8 @@ void sensor_manager_note_rx(sensor_t *s)
         s->rx_head = (s->rx_head + 1) % HE_MOVING_AVG_WINDOW;
         s->rx_count = 1;
         s->loss_pct = 0.0f;
+        int idx = meas_index(s);
+        if (idx >= 0 && idx <= HE_MAX_SENSORS) s_lt_rx[idx]++;
         return;
     }
 
@@ -198,6 +214,8 @@ void sensor_manager_note_rx(sensor_t *s)
     s->rx_ms[s->rx_head] = now;
     s->rx_head = (s->rx_head + 1) % HE_MOVING_AVG_WINDOW;
     if (s->rx_count < HE_MOVING_AVG_WINDOW) s->rx_count++;
+    int lt_idx = meas_index(s);
+    if (lt_idx >= 0 && lt_idx <= HE_MAX_SENSORS) s_lt_rx[lt_idx]++;
 
     /* Loss over the covered span. With only 2 slots we know 1 interval;
      * with k slots we know k-1 intervals: use the newest interval only

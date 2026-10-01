@@ -80,6 +80,16 @@ void lora_unpair_verify_start(int expect_id, int window_s);
 int  lora_unpair_verify_state(void);
 void lora_unpair_verify_clear(void);
 
+/* ---- Radio-frame diagnostics (UI link-loss %) ----
+ * Cumulative counters since boot, RAM-only:
+ * garbage = lines that parsed as neither a text nor a binary frame
+ *   (RF noise, collisions, truncated UART data);
+ * rejected = well-formed frames dropped before the sensor manager
+ *   (out-of-range temperature). Accepted frames are counted per sensor
+ * by sensor_manager_link_stats(); silence (no frame at all) surfaces
+ * there as MISS. */
+void lora_link_stats(uint32_t *garbage, uint32_t *rejected);
+
 #ifdef __cplusplus
 }
 #endif

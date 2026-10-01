@@ -76,6 +76,13 @@ typedef struct {
  * Returns the number of slots written (0 when the id is unknown). */
 int sensor_manager_get_buffer(int id, he_meas_slot_t *out, int max);
 
+/* ---- Long-term link diagnostics (UI loss %) ----
+ * Cumulative per-slot counters since boot: accepted radio frames (OK + ERR)
+ * vs expected-but-missing frame slots (MISS). RAM-only, never persisted.
+ * loss% = 100 * miss / (rx + miss). id is the measurement-buffer index
+ * (1..HE_MAX_SENSORS = internal logical id). */
+void sensor_manager_link_stats(int id, uint32_t *rx, uint32_t *miss);
+
 /* Frame protocol constants (external sensor interface). */
 #define HE_FRAME_START  0xAA
 #define HE_FRAME_END    0x55

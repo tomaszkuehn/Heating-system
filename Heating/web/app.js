@@ -305,11 +305,19 @@ async function showSensorBuffer(sx) {
   sd.classList.remove('hidden');
   const slots = await api('/api/sensor/buffer?id=' + sx.id) || [];
   const synced = !!(lastState && lastState.time_synced);
+  /* Long-term link summary: cumulative RX/MISS since controller boot. */
+  const bRx = sx.lt_rx || 0, bMiss = sx.lt_miss || 0, bTot = bRx + bMiss;
+  const bLt = bTot > 0
+    ? `<div style="margin-bottom:6px">Łącze od startu: odebrano <b>${bRx}</b>, utracono <b>${bMiss}</b> (<b>${(100 * bMiss / bTot).toFixed(1)}%</b>).</div>`
+    : '';
+  const bGb = lastState ? `<div style="margin-top:6px;font-size:11px;color:var(--muted)">Śmieci radiowe od startu (wszystkie węzły): ${lastState.lora_garbage || 0} nieczytelnych / ${lastState.lora_rejected || 0} odrzuconych.</div>` : '';
   $('sensorDetailBody').innerHTML =
     '<div style="margin-bottom:6px">Średnia ruchoma z 8 surowych odczytów — raw ' +
     fmtT(sx.raw) + ' → eff ' + fmtT(sx.eff) + '</div>'
+    + bLt
     + bufferRows(slots, synced)
-    + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">OK = pomiar, ERR = ramka ERR z czujnika, brak = oczekiwana ramka nie dotarła (MISS).</div>';
+    + '<div style="margin-top:6px;font-size:11px;color:var(--muted)">OK = pomiar, ERR = ramka ERR z czujnika, brak = oczekiwana ramka nie dotarła (MISS).</div>'
+    + bGb;
 }
 
 function renderSensors(sensors) {
@@ -320,6 +328,11 @@ function renderSensors(sensors) {
     tr.dataset.sid = sx.id;
     const q = sx.quality;
     const radioTag = sx.radio_id ? ` <span style="color:var(--accent);font-size:11px" title="ID węzła LoRa">📡${sx.radio_id}</span>` : '';
+    /* Long-term link loss (cumulative since controller boot): percent of
+     * expected frames missing. Shown only for bound radio sensors. */
+    const ltRx = sx.lt_rx || 0, ltMiss = sx.lt_miss || 0, ltTot = ltRx + ltMiss;
+    const ltHtml = (sx.radio_id && q !== 'DISABLED' && ltTot > 0)
+      ? `<div style="font-size:10px;color:var(--muted)" title="Od startu sterownika: odebrano ${ltRx}, brak ${ltMiss}">Σ ${Math.round(100 * ltMiss / ltTot)}%</div>` : '';
     tr.innerHTML = `
       <td>${sx.id}${radioTag}${sx.external ? ' ★' : ''}${sx.sim ? ' SIM' : ''}</td>
       <td><input class="name" value="${sx.name}"></td>
@@ -327,7 +340,7 @@ function renderSensors(sensors) {
       <td><input type="number" step="0.01" value="${sx.weight}"></td>
       <td><input type="number" step="0.1" value="${sx.calib}"></td>
       <td><input type="number" step="0.1" value="${sx.comfort}"></td>
-      <td class="hcell">${healthDot(q, sx)}</td>
+      <td class="hcell">${healthDot(q, sx)}${ltHtml}</td>
       <td class="qcell q-${q}">${q}${sx.window ? ' ⊗' : ''}</td>
       <td class="ecell">${fmtT(sx.eff)}</td>
       <td><button class="btn" style="padding:4px 8px" data-id="${sx.id}">Zapisz</button><button class="btn" style="padding:4px 8px;margin-left:4px;background:#444" data-buf="${sx.id}" title="Pokaż bufor pomiarów z czasami">📊 Bufor</button>${sx.window ? `<button class="btn" style="padding:4px 8px;margin-left:4px" data-restore="${sx.id}">Przywróć</button>` : ''}${sx.radio_id ? `<button class="btn btn-danger" style="padding:4px 8px;margin-left:4px" data-unpair="${sx.radio_id}" title="Usuń czujkę LoRa (węzeł zachowa swoje ID — reset przyciskiem BOOT na węźle)">Usuń</button>` : ''}</td>`;
@@ -408,6 +421,7 @@ function renderModes(s) {
     if ($('limMinOn')) $('limMinOn').value = s.min_on_sec || 90;
     if ($('limMinOff')) $('limMinOff').value = s.min_off_sec || 90;
     if ($('limAntiosc')) $('limAntiosc').value = s.anti_osc_lock_sec || 120;
+    if ($('limIgnoreRise')) $('limIgnoreRise').checked = !!s.ignore_heat_rise;
     /* per-event-type e-mail subscription (safe booleans). */
     if ($('nEvFaults'))  $('nEvFaults').checked  = s.notify_ev.faults;
     if ($('nEvRestart')) $('nEvRestart').checked = s.notify_ev.restart;
@@ -1136,7 +1150,8 @@ $('btnLimits').onclick = () => post('/api/limits', {
   max_on_break_sec: +$('limBreak').value,
   min_on_sec: +$('limMinOn').value,
   min_off_sec: +$('limMinOff').value,
-  anti_osc_lock_sec: +$('limAntiosc').value
+  anti_osc_lock_sec: +$('limAntiosc').value,
+  ignore_heat_rise: $('limIgnoreRise').checked
 }, true).then(() => refresh());
 
 /* Collapsible config sections: clicking the header toggles its card. */
