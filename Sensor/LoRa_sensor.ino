@@ -47,6 +47,8 @@ uint32_t lastSendAt = 0; // CHANGE
 uint32_t lastAckAt = 0; // CHANGE
 bool awaitingAck = false; // CHANGE
 bool bootResetHandled = false; // CHANGE
+bool retransmitted = false; // CHANGE: one same-frame resend after ACK timeout
+char lastPayload[24]; // CHANGE: payload stored so a resend is byte-identical
 
 // CHANGE: receive buffer for processing multiple frames present in the LoRa module buffer
 const size_t RX_BUFFER_SIZE = 96;
@@ -129,10 +131,13 @@ void sendMeasurement() { // CHANGE
   }
   Serial.print("Temperature: ");
   Serial.println(temperatureC, 3);
+  strncpy(lastPayload, payload, sizeof(lastPayload) - 1); // CHANGE: keep for a possible resend
+  lastPayload[sizeof(lastPayload) - 1] = '\0';
   LoRaSendFrame(payload); // CHANGE: magic as raw bytes 0x02 0xE3
 
   lastSendAt = millis();
   awaitingAck = true;
+  retransmitted = false; // CHANGE: new measurement -> resend budget reset
   scheduleNextMeasurement();
 }
 
@@ -341,7 +346,18 @@ void loop() {
     if (LoRaPowerStatus != HIGH_POWER) {
       LoRaPower(HIGH_POWER);
     }
-    awaitingAck = false; // CHANGE: do not stall the measurement loop
+    // CHANGE: retry the same frame once at high power — a lost measurement
+    // otherwise stays lost for the whole 20 s slot. The ACK handler clears
+    // awaitingAck as usual, so either the original or the retry satisfies it.
+    if (!retransmitted) {
+      retransmitted = true;
+      Serial.print("RETRANSMIT: ");
+      Serial.println(lastPayload);
+      LoRaSendFrame(lastPayload);
+      lastSendAt = millis();
+      return; // skip this tick's reboot check; resume scheduling next loop pass
+    }
+    awaitingAck = false;
   }
 
   if (now - lastAckAt >= NO_ACK_REBOOT_MS) { // CHANGE
