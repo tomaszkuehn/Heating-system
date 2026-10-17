@@ -54,6 +54,8 @@ extern "C" {
 /* ---- Timing ---- */
 #define HE_WDT_TIMEOUT_SEC     19            /* task watchdog timeout     */
 #define HE_LORA_RX_WINDOW_MS   5000         /* ACK receive window         */
+#define HE_LORA_FRAME_PERIOD_MS 20000       /* LoRa.txt: frame every 20 s */
+#define HE_LORA_FRAME_JITTER_MS 2000        /* LoRa.txt: + random 0-2 s   */
 #define HE_LORA_INIT_MS        4000         /* wait after AT+RESET        */
 #define HE_LORA_PWR_SETTLE_MS  500          /* settle after power change  */
 #define HE_STATUS_OK            50          /* confirmed link status      */

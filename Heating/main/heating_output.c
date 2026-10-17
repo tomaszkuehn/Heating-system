@@ -37,7 +37,7 @@ void heating_output_set_simulation(bool simulate_heating, bool mixed_mode)
     s_mixed = mixed_mode;
     if (simulate_heating && !mixed_mode) {
         /* Ensure the physical line is safe while simulating. */
-        gpio_set_level(HE_GPIO_HEATING, 0);
+        gpio_set_level(HE_GPIO_HEATING, 1);
     }
 }
 
@@ -50,7 +50,7 @@ void heating_output_set_relay(bool on)
         /* Simulation: do not drive physical GPIO (spec 8.3). */
         return;
     }
-    gpio_set_level(HE_GPIO_HEATING, on ? 1 : 0);
+    gpio_set_level(HE_GPIO_HEATING, on ? 0 : 1);
 }
 
 bool heating_output_relay_state(void) { return s_relay_state; }

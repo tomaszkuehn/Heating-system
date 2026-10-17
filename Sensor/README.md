@@ -36,6 +36,22 @@ TT.TTT T<NN>&<CR><LF>
 
 np. `21.500 T01&` dla czujnika 1 = 21,50 °C. Brak odczytu → linia `ERR T&`.
 
+## Parowanie i reset (wersja ESP-IDF)
+
+- Węzeł niesparowany (ID 0) ogłasza się ramką `TT.TTT T00&` i nasłuchuje
+  komendy parowania.
+- Przyjmowana jest **binarna** ramka `02 E3 PR<n>T9#` (`LoRa.txt`, aktualny
+  kontroler) oraz — jako fallback dla starszych buildów kontrolera —
+  podpisana HMAC ramka tekstowa `PAIR <id> <nonce> <tag>` (ochrona przed
+  replay: pierścień 32 nonce'ów w NVS).
+- Po przyjęciu ID zapisywane jest w NVS (klucz `node_id`, przetrwa restart);
+  węzeł odpowiada `OK T<n>&` i przechodzi do normalnej pracy.
+- Reset do fabrycznego ID 0: przytrzymanie **BOOT ≥ 5 s** (dioda zapala się
+  po osiągnięciu progu, ID zerowane, reboot po zwolnieniu przycisku).
+- Rytm pomiarów (LoRa.txt): co **20 s + losowe 0–2 s**, liczone start-do-startu
+  (okno ACK i odczyty sond wliczają się w odstęp). Po wysyłce węzeł otwiera
+  okno nasłuchu ACK (`HE_LORA_RX_WINDOW_MS`).
+
 ## Alternatywna implementacja Arduino (`LoRa_sensor.ino`)
 
 Katalog `Sensor/` zawiera równoległą implementację Arduino (`LoRa_sensor.ino`)

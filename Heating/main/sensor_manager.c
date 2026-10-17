@@ -15,9 +15,17 @@
 
 static const char *TAG = "sensor";
 
+/* Liczba odczytów pomijanych na starcie każdego czujnika — zimny DS18B20
+ * potrafi podać zawyżoną temperaturę (samogrzanie / transient startu). */
+#define HE_WARMUP_READINGS 3
+
 static sensor_t *s_sensors = NULL;     /* internal sensors */
 static int       s_count = 0;
 static sensor_t *s_external = NULL;
+
+/* Pozostała liczba odczytów do odrzucenia na starcie (indeks 0 = zewnętrzny,
+ * 1..HE_MAX_SENSORS = wewnętrzne). */
+static uint8_t s_warmup[HE_MAX_SENSORS + 1];
 
 /* Per-sensor bookkeeping for open-window & stale detection. */
 static float  s_baseline[HE_MAX_SENSORS];
@@ -151,6 +159,7 @@ void sensor_manager_init(void)
         s_drift_since_us[i] = 0;
     }
     memset(s_meas, 0, sizeof(s_meas));
+    memset(s_warmup, 0xFF, sizeof(s_warmup));
     ESP_LOGI(TAG, "UART%d initialised for external sensor interface", HE_SENSOR_UART);
 }
 
@@ -161,9 +170,30 @@ void sensor_manager_bind(sensor_t *sensors, int count, sensor_t *external)
     s_external = external;
 }
 
-/* Push a raw reading into a sensor's rolling buffer and update effective temp. */
-static void push_reading(sensor_t *s, float raw)
+/* Push a raw reading into a sensor's rolling buffer and update effective temp.
+ * Returns true when the reading was accepted; false when dropped as a warmup
+ * sample. apply_warmup is false for simulation sources (they are synthetic). */
+static bool push_reading(sensor_t *s, float raw, bool apply_warmup)
 {
+    int idx = meas_index(s);
+    if (idx < 0 || idx > HE_MAX_SENSORS) return false;
+
+    /* Warmup: odrzuć pierwsze N prawdziwych odczytów po zimnym starcie, by
+     * zawyżona początkowa temperatura nie weszła do średniej ani nie oznaczyła
+     * czujnika jako zdrowego przed czasem. 0xFF = "jeszcze nie uzbrojony"
+     * (nadawany raz, przy pierwszym odczycie wyczerpuje się i NIE uzbraja się
+     * ponownie — inaczej pętla: odczyt uzbraja licznik, żaden nigdy nie
+     * wchodzi do średniej, sample_count pozostaje 0 i licznik uzbraja się
+     * od nowa przy każdej kolejnej ramce). */
+    if (apply_warmup) {
+        if (s_warmup[idx] == 0xFF && s->sample_count == 0)
+            s_warmup[idx] = HE_WARMUP_READINGS;
+        if (s_warmup[idx] != 0xFF && s_warmup[idx] > 0) {
+            s_warmup[idx]--;
+            return false;
+        }
+    }
+
     s->last_raw = raw;
     s->samples[s->sample_head] = raw;
     s->sample_head = (s->sample_head + 1) % HE_MOVING_AVG_WINDOW;
@@ -176,7 +206,8 @@ static void push_reading(sensor_t *s, float raw)
     s->last_update_ms = mono_ms();
 
     /* Diagnostic buffer: record the accepted raw measurement. */
-    meas_push(meas_index(s), HE_MEAS_OK, raw);
+    meas_push(idx, HE_MEAS_OK, raw);
+    return true;
 }
 
 /* ---- Radio-link loss estimation (spec: yellow at >30% lost) ----
@@ -332,8 +363,13 @@ static bool parse_frame(const uint8_t *buf, int len)
             for (int k = 0; k < s_count; k++) if (s_sensors[k].id == id) { target = &s_sensors[k]; break; }
         }
         if (!target) continue;
-        push_reading(target, t);
-        if (t < HE_TEMP_MIN_LOGICAL || t > HE_TEMP_MAX_LOGICAL)
+        if (t > HE_TEMP_MAX_ACCEPT) {
+            ESP_LOGW(TAG, "sensor id %u: rejected %.2f C (bogus > %.0f)",
+                     (unsigned)id, t, HE_TEMP_MAX_ACCEPT);
+            continue;
+        }
+        if (!push_reading(target, t, true)) continue;
+        if (t < HE_TEMP_MIN_LOGICAL || t >= HE_TEMP_MAX_LOGICAL)
             target->quality = QUAL_OUT_OF_RANGE;
         else if (target->active && !target->window_open)
             target->quality = target->simulated ? QUAL_SIMULATED : QUAL_OK;
@@ -380,7 +416,7 @@ void sensor_manager_poll(void)
         if (s->simulated) {
             float v = sim_produce_reading(s);
             if (he_isnan(v)) { s->quality = QUAL_TIMEOUT; continue; }
-            push_reading(s, v);
+            push_reading(s, v, false);
             if (v < HE_TEMP_MIN_LOGICAL || v > HE_TEMP_MAX_LOGICAL)
                 s->quality = QUAL_OUT_OF_RANGE;
             else
@@ -395,7 +431,7 @@ void sensor_manager_poll(void)
             s_external->quality = QUAL_DISABLED;
         } else if (s_external->simulated) {
             float v = sim_produce_reading(s_external);
-            if (!he_isnan(v)) { push_reading(s_external, v); s_external->quality = QUAL_SIMULATED; }
+            if (!he_isnan(v)) { push_reading(s_external, v, false); s_external->quality = QUAL_SIMULATED; }
         }
     }
 
@@ -528,9 +564,17 @@ void sensor_manager_lora_update(int id, float temperature)
     if (!target) return;
     if (!target->active || target->simulated) return;
 
-      push_reading(target, temperature);
-      sensor_manager_note_rx(target);
-      if (temperature < HE_TEMP_MIN_LOGICAL || temperature > HE_TEMP_MAX_LOGICAL)
+    /* Bogus reading (e.g. DS18B20 power-on 85.0): ignore entirely — no moving
+     * average update, no quality change. */
+    if (temperature > HE_TEMP_MAX_ACCEPT) {
+        ESP_LOGW(TAG, "radio T%d: rejected %.2f C (bogus > %.0f)",
+                 id, temperature, HE_TEMP_MAX_ACCEPT);
+        return;
+    }
+
+    if (!push_reading(target, temperature, true)) return;
+    sensor_manager_note_rx(target);
+      if (temperature < HE_TEMP_MIN_LOGICAL || temperature >= HE_TEMP_MAX_LOGICAL)
           target->quality = QUAL_OUT_OF_RANGE;
       else
           target->quality = QUAL_OK;

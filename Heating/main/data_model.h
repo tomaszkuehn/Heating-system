@@ -28,6 +28,10 @@ extern "C" {
 #define HE_SENSOR_TIMEOUT_SEC   90     /* stale if no data within this window */
 #define HE_TEMP_MIN_LOGICAL     -40.0f  /* logical range for a valid reading   */
 #define HE_TEMP_MAX_LOGICAL     85.0f
+/* Hard cutoff for accepted sensor reports: anything above this is a bogus
+ * reading (DS18B20 power-on reset value is exactly 85.0 C) and is ignored
+ * outright — it must never enter the moving average. */
+#define HE_TEMP_MAX_ACCEPT      60.0f
 #define HE_WINDOW_DROP_RATE     0.30f  /* degC per minute => open-window       */
 #define HE_WINDOW_RECOVERY_HYST 0.4f   /* re-enable sensor after recovery      */
 

@@ -38,7 +38,7 @@ static volatile bool s_test_active = false;
 
 static lora_node_desc_t s_pair_nodes[HE_MAX_SENSORS + 1];  /* [id] */
 
-static void pair_broadcast(const char *fmt, int a, int b);
+static void pair_broadcast(int id);
 
 void lora_pair_request(lora_node_desc_t *nodes, int *count, int max)
 {
@@ -55,7 +55,6 @@ void lora_pair_request(lora_node_desc_t *nodes, int *count, int max)
 /* Broadcast the binary pairing command <0x02 0xE3>PR<id>T9# (LoRa.txt).
  * A node holding factory id 0 stores <id> on receipt; no other pairing
  * flavour is sent. */
-void lora_pair_assign(int id)            { pair_broadcast("PR %d", id, id); }
 
 /* Manually send one raw frame (UI debug form). The frame is broadcast as
  * typed (terminator '&' is appended when missing) and repeated a few times
@@ -76,28 +75,78 @@ void lora_raw_send(const char *frame)
     }
 }
 
-/* ---- Pairing/unpair verification (async) ----
- * After a PAIR/RESET broadcast arm a verification window (~3 node cycles).
- * The scanner watches the addressed node's fresh announcements:
- *   - pair:   expect "T<rid>"  (node accepted the assignment)
- *   - unpair: expect "T00"     (node back to factory default)
- * Results surface through lora_unpair_verify_state(). */
-#define HE_UNPAIR_VERIFY_CYCLES 3
-
-typedef enum {
-    UNPAIR_IDLE = 0,
-    UNPAIR_PENDING,     /* broadcast done, waiting for the node's answer */
-    UNPAIR_CONFIRMED,   /* expected announcement seen                    */
-    UNPAIR_FAILED,      /* window elapsed, expected announcement absent  */
-} unpair_state_t;
+/* ---- Over-the-air pairing (async state machine) ----
+ * A job = up to HE_PAIR_ATTEMPTS × (PR broadcast + listen window). The
+ * window is longer than the longest possible node frame gap, so a single
+ * guaranteed-fresh announcement (T<rid>) inside it proves the node stored
+ * the new id. Pairing success is confirmed ONLY by that announcement;
+ * the web layer creates the sensor slot in the on_result callback, so a
+ * failed pairing leaves no dead slot behind. */
+enum { PAIR_IDLE = 0, PAIR_PENDING, PAIR_CONFIRMED, PAIR_FAILED };
 
 typedef struct {
-    unpair_state_t state;
-    int      expect_id;       /* radio id expected after the command (0 for unpair) */
-    int64_t  deadline_us;     /* verification window end */
-} unpair_verify_t;
+    int                   rid;
+    volatile bool         confirmed;
+    lora_pair_result_fn_t on_result;
+} pair_job_t;
 
-static unpair_verify_t s_unpair = { .state = UNPAIR_IDLE };
+static pair_job_t s_pair = { .rid = 0, .confirmed = false, .on_result = NULL };
+static volatile int s_pair_state = PAIR_IDLE;
+
+/* Called from process_binary()/process_line() on every fresh announcement. */
+static void pair_verify_note(int id)
+{
+    if (s_pair_state != PAIR_PENDING) return;
+    if (id == s_pair.rid) s_pair.confirmed = true;
+}
+
+bool lora_pair_busy(void) { return s_pair_state == PAIR_PENDING; }
+
+const char *lora_pair_state(void)
+{
+    switch (s_pair_state) {
+        case PAIR_PENDING:   return "pending";
+        case PAIR_CONFIRMED: return "confirmed";
+        case PAIR_FAILED:    return "failed";
+        default:             return "idle";
+    }
+}
+
+static void pair_task(void *arg)
+{
+    (void)arg;
+    int attempts = HE_PAIR_ATTEMPTS;
+    while (attempts-- > 0 && !s_pair.confirmed) {
+        pair_broadcast(s_pair.rid);
+        int64_t deadline = esp_timer_get_time() + (int64_t)HE_PAIR_ACK_WINDOW_MS * 1000;
+        while (!s_pair.confirmed && esp_timer_get_time() < deadline)
+            vTaskDelay(pdMS_TO_TICKS(200));
+    }
+    bool ok = s_pair.confirmed;
+    s_pair_state = ok ? PAIR_CONFIRMED : PAIR_FAILED;
+    char ev[48];
+    snprintf(ev, sizeof(ev), ok ? "pairing confirmed: node T%d"
+                                : "pairing failed: no answer on T%d", s_pair.rid);
+    storage_log_event(FAULT_NONE, 0, ev);
+    if (s_pair.on_result) s_pair.on_result(s_pair.rid, ok);
+    vTaskDelete(NULL);
+}
+
+bool lora_pair_start(int rid, lora_pair_result_fn_t on_result)
+{
+    if (rid < 1 || rid > HE_MAX_SENSORS) return false;
+    if (s_pair_state == PAIR_PENDING) return false;
+    s_pair.rid       = rid;
+    s_pair.confirmed = false;
+    s_pair.on_result = on_result;
+    s_pair_state     = PAIR_PENDING;
+    TaskHandle_t h;
+    if (xTaskCreate(pair_task, "lora_pair", 4096, NULL, 5, &h) != pdPASS) {
+        s_pair_state = PAIR_FAILED;
+        return false;
+    }
+    return true;
+}
 
 /* Cumulative radio-frame diagnostics (see lora_link_stats). */
 static uint32_t s_rx_garbage = 0;
@@ -109,42 +158,8 @@ void lora_link_stats(uint32_t *garbage, uint32_t *rejected)
     if (rejected) *rejected = s_rx_rejected;
 }
 
-/* Called from process_line() on every fresh announcement. */
-static void unpair_verify_note(int id)
+static void pair_broadcast(int id)
 {
-    if (s_unpair.state != UNPAIR_PENDING) return;
-    if (esp_timer_get_time() > s_unpair.deadline_us) {
-        s_unpair.state = UNPAIR_FAILED;
-        return;
-    }
-    if (id == s_unpair.expect_id)
-        s_unpair.state = UNPAIR_CONFIRMED;
-}
-
-/* Arm the verification window. expect_id = the radio id the node should
- * announce after the broadcast (0 = unpaired/reset case). */
-void lora_unpair_verify_start(int radio_id, int window_s)
-{
-    s_unpair.state       = UNPAIR_PENDING;
-    s_unpair.expect_id   = radio_id;
-    s_unpair.deadline_us = esp_timer_get_time() + (int64_t)window_s * 1000000;
-}
-
-/* Poll verification progress. Returns: 0 idle, 1 pending, 2 confirmed,
- * 3 failed. Called by the web layer to report the outcome and offer a
- * force-delete fallback. */
-int lora_unpair_verify_state(void)
-{
-    if (s_unpair.state == UNPAIR_PENDING &&
-        esp_timer_get_time() > s_unpair.deadline_us)
-        s_unpair.state = UNPAIR_FAILED;
-    return (int)s_unpair.state;
-}
-void lora_unpair_verify_clear(void) { s_unpair.state = UNPAIR_IDLE; }
-
-static void pair_broadcast(const char *fmt, int a, int b)
-{
-    (void)fmt; (void)b;
     /* Binary pairing command for the Arduino node (LoRa.txt):
      * <0x02 0xE3>PR<id>T9#. A node holding factory id 0 stores <id> on
      * receipt. This is the only pairing frame the controller sends. */
@@ -153,21 +168,20 @@ static void pair_broadcast(const char *fmt, int a, int b)
     bincmd[binlen++] = HE_LORA_BIN_MAGIC0;
     bincmd[binlen++] = HE_LORA_BIN_MAGIC1;
     binlen += (size_t)snprintf((char *)bincmd + binlen, sizeof(bincmd) - binlen - 1,
-                               "PR%dT%d#", a, HE_LORA_BIN_CTRL_ID);
+                               "PR%dT%d#", id, HE_LORA_BIN_CTRL_ID);
 
     char ev[64];
-    snprintf(ev, sizeof(ev), "lora tx: PR%dT%d# (bin)", a, HE_LORA_BIN_CTRL_ID);
+    snprintf(ev, sizeof(ev), "lora tx: PR%dT%d# (bin)", id, HE_LORA_BIN_CTRL_ID);
     storage_log_event(FAULT_NONE, 0, ev);
     /* The node listens for pairing commands only inside its RX window once
      * per cycle. Broadcast long enough to cover one full node cycle so the
      * command is guaranteed to land inside a window. */
     for (int i = 0; i < 60; i++) {
-        ESP_LOGI(TAG, "tx frame (bin): PR%dT%d# (%d/60)", a, HE_LORA_BIN_CTRL_ID, i + 1);
+        ESP_LOGI(TAG, "tx frame (bin): PR%dT%d# (%d/60)", id, HE_LORA_BIN_CTRL_ID, i + 1);
         uart_write_bytes(HE_LORA_UART, bincmd, binlen);
         vTaskDelay(pdMS_TO_TICKS(150));
     }
-    ESP_LOGI(TAG, "pairing broadcast sent (bin): PR%dT%d#", a, HE_LORA_BIN_CTRL_ID);
-    /* The request is consumed: UI should not offer a stale announcement. */
+    ESP_LOGI(TAG, "pairing broadcast sent (bin): PR%dT%d#", id, HE_LORA_BIN_CTRL_ID);
 }
 
 void lora_receiver_test_mode(bool on)
@@ -323,12 +337,12 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
         s_pair_nodes[0].id = 0;
         s_pair_nodes[0].temp = temp;
         s_pair_nodes[0].age_s = 0;
-        unpair_verify_note(0);
+        pair_verify_note(0);
         ESP_LOGI(TAG, "pairing request (bin): T0 = %.2f C", temp);
         send_binary_ack(id);
         return;
     }
-    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
+    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_ACCEPT) {
         ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
         s_rx_rejected++;
         return;
@@ -336,7 +350,7 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
     s_pair_nodes[id].id = id;
     s_pair_nodes[id].temp = temp;
     s_pair_nodes[id].age_s = 0;
-    unpair_verify_note(id);
+    pair_verify_note(id);
 
     he_config_lock();
     sensor_manager_lora_update(id, temp);
@@ -394,12 +408,12 @@ static void process_line(const char *line)
         s_pair_nodes[0].id = 0;
         s_pair_nodes[0].temp = temp;
         s_pair_nodes[0].age_s = 0;
-        unpair_verify_note(0);
+        pair_verify_note(0);
         ESP_LOGI(TAG, "pairing request: T00 = %.2f C", temp);
         return;
     }
 
-    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
+    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_ACCEPT) {
         ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
         s_rx_rejected++;
         return;
@@ -409,9 +423,9 @@ static void process_line(const char *line)
     s_pair_nodes[id].id = id;
     s_pair_nodes[id].temp = temp;
     s_pair_nodes[id].age_s = 0;
-    unpair_verify_note(id);
+    pair_verify_note(id);
 
-    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_LOGICAL) {
+    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_ACCEPT) {
         ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
         return;
     }
@@ -605,27 +619,32 @@ void lora_receiver_init(void)
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
     /* LoRa.txt: the node and the controller must transmit on the same RF
-     * channel. Read the module's saved registers and, when a field-provisioned
-     * module sits on another channel, rewrite CHAN to HE_LORA_CHANNEL so the
-     * link cannot silently break. Runs before the rx task starts, so it owns
-     * the UART exclusively. */
+     * channel. Read the module's saved registers and rewrite CHAN when a
+     * field-provisioned module sits on another channel. Also force maximum
+     * TX power (OPT[1:0] = 00 = 20 dBm on E32-433T20D): a module left at a
+     * reduced power setting breaks the link asymmetrically — node frames
+     * still arrive here while our own transmissions no longer reach the
+     * node (pairing then never completes). Runs before the rx task starts,
+     * so it owns the UART exclusively. */
     vTaskDelay(pdMS_TO_TICKS(300));
     e32_set_mode(HE_LORA_MODE_CONFIG);
     uint8_t p[6];
     if (e32_read(p)) {
         ESP_LOGI(TAG, "E32: addr=%02X%02X sped=0x%02X chan=%d opt=0x%02X (%d MHz)",
                  p[1], p[2], p[3], p[4], p[5], 410 + p[4]);
-        if (p[4] != HE_LORA_CHANNEL) {
+        uint8_t want_opt = (uint8_t)(p[5] & ~0x03);
+        if (p[4] != HE_LORA_CHANNEL || want_opt != p[5]) {
             uint8_t want[6];
             memcpy(want, p, sizeof(want));
             want[4] = HE_LORA_CHANNEL;
+            want[5] = want_opt;
             e32_write(want);
             vTaskDelay(pdMS_TO_TICKS(100));
-            if (e32_read(p) && p[4] == HE_LORA_CHANNEL)
-                ESP_LOGI(TAG, "E32 channel synced to %d (%d MHz)",
+            if (e32_read(p) && p[4] == HE_LORA_CHANNEL && (p[5] & 3) == 0)
+                ESP_LOGI(TAG, "E32 synced: chan %d (%d MHz), TX 20 dBm",
                          HE_LORA_CHANNEL, 410 + HE_LORA_CHANNEL);
             else
-                ESP_LOGW(TAG, "E32 channel sync FAILED (still %d)", p[4]);
+                ESP_LOGW(TAG, "E32 sync FAILED (chan %d opt 0x%02X)", p[4], p[5]);
         }
     } else {
         ESP_LOGW(TAG, "E32 parameter read failed — channel left as-is");

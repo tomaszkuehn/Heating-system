@@ -194,13 +194,22 @@ nieskonfigurowany czujnik"):
    udostępnia je przez `GET /api/lora/pair` →
    `{"nodes":[{"id":0,"temp":21.9,"age":3}],"free":[2,3,4,5,6]}`.
    `free[]` = ID radiowe 1..6 nieobsługiwane przez żaden aktywny czujnik.
-3. Użytkownik wybiera ID z listy; `POST /api/lora/pair?id=N` tworzy brakujące
-   sloty czujników (nazwa domyślna „Czujnik LoRa %d") i wysyła radiowo
-   **tylko binarną** ramkę `02 E3 PR<n>T9#` (powtarzaną ~9 s — dłużej niż cykl
-   słuchania węzła, więc trafia w jego okno odbioru). Starsza, tekstowa ramka
-   `PAIR <n>&` z podpisem HMAC została **usunięta** — węzły używają protokołu
-   binarnego z `LoRa.txt`.
-4. Węzeł o ID 0 zapisuje nowe ID w NVS (przetrwa restart) i od tej chwili
+3. Użytkownik wybiera ID z listy; `POST /api/lora/pair?id=N` uruchamia
+   **asynchroniczne zadanie parowania**: do 3× nadanie binarnej ramki
+   `02 E3 PR<n>T9#` (~9 s — dłużej niż cykl słuchania węzła, więc trafia
+   w jego okno odbioru), a po każdej próbie 30-sekundowe okno nasłuchu
+   (dłuższe niż najdłuższy możliwy odstęp ramek węzła wg `LoRa.txt`:
+   20 s + 0..2 s). Bieżący stan zadania zwraca
+   `GET /api/lora/unpair/status` → `{"state":"pending|confirmed|failed"}`.
+4. Parowanie jest **potwierdzone wyłącznie wtedy, gdy węzeł zacznie
+   ogłaszać się nowym ID `T<n>`** — dopiero wtedy tworzony jest slot
+   czujnika (nazwa domyślna „Czujnik LoRa %d", waga 1.0) i zapisywana
+   konfiguracja. Po wyczerpaniu prób zadanie kończy się stanem `failed`
+   i **żaden slot nie powstaje** (brak martwych slotów po nieudanym
+   parowaniu). Starsza, tekstowa ramka `PAIR <n>&` z podpisem HMAC nie
+   jest już wysyłana; węzeł ESP-IDF akceptuje ramkę binarną `PR<n>T9#`
+   (fallback: podpisana ramka tekstowa dla starszych buildów kontrolera).
+5. Węzeł o ID 0 zapisuje nowe ID w NVS (przetrwa restart) i od tej chwili
    nadaje jako `T<n>`.
 
 Uwaga: **zmiana ID istniejącego węzła oraz zdalny reset (REPAIR/RESET) nie są
@@ -212,6 +221,22 @@ swoje ID).
 
 Uwaga: ramka `ERR T&` (brak sond) jest ignorowana przez logikę parowania —
 dawniej była błędnie traktowana jako ogłoszenie `T00` z temperaturą NaN.
+
+### Walidacja pomiarów i moc radia
+
+- **Filtr rozgrzewkowy**: pierwsze 3 rzeczywiste odczyty po zimnym starcie
+  (`HE_WARMUP_READINGS`) są odrzucane — DS18B20 po zasileniu potrafi zgłosić
+  zawyżoną wartość (samoogrzewanie / power-on 85 °C). Licznik uzbrajany jest
+  dokładnie raz (sentinel 0xFF) — wcześniejsza wersja uzbrajała go od nowa
+  przy każdej ramce i czujnik pozostawał w `TIMEOUT` w nieskończoność.
+- **Odcięcie bezsensownych wartości**: ramka z temperaturą > 60 °C
+  (`HE_TEMP_MAX_ACCEPT`) jest ignorowana w całości — nie wchodzi do średniej
+  kroczącej ani nie zmienia jakości czujnika. Granica logiczna 85 °C
+  (`HE_TEMP_MAX_LOGICAL`) oznacza odczyt jako `OUT_OF_RANGE`.
+- **Moc radia**: przy starcie kontroler wymusza na E32 maksymalną moc TX
+  (20 dBm, OPT[1:0] = 00) razem z synchronizacją kanału. Obniżona moc modułu
+  psuje łącze **asymetrycznie**: ramki węzła dochodzą do kontrolera, ale
+  komendy kontrolera nie docierają do węzła — parowanie nigdy się nie kończy.
 
 ## Pamięć trwała (spec pkt 9–10)
 

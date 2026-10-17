@@ -1150,24 +1150,19 @@ static esp_err_t h_lora_pair_get(httpd_req_t *req)
 /* ---- /api/lora/pair?id=N (POST) — assign radio id N to the unpaired node ----
  * Concept: every node ships FACTORY-PAIRED TO 0 (T00 announcements). Pairing
  * broadcasts the binary <0x02 0xE3>PR<id>T9# frame which only a T00 node
- * accepts; it then stores N in its NVS and starts announcing Tn.
- * Only T00 nodes are pairable — a node already holding an id cannot be
- * re-addressed over the air (factory reset via its BOOT button restores 0). */
-static esp_err_t h_lora_pair_post(httpd_req_t *req)
+ * accepts; it then stores N in its NVS and starts announcing Tn. The whole
+ * procedure runs as an async job in lora_receiver: up to HE_PAIR_ATTEMPTS
+ * broadcasts, each followed by a listen window longer than the longest node
+ * frame gap. The sensor slot is created by pair_result_cb ONLY after the
+ * node confirms the assignment by announcing the new id — a failed pairing
+ * leaves no dead slot behind. */
+static void pair_result_cb(int rid, bool ok)
 {
-    char vs[8];
-    if (!qarg(req, "id", vs, sizeof(vs))) return send_text(req, "missing id", 400);
-    int rid = atoi(vs);
-    if (rid < 1 || rid > HE_MAX_SENSORS) return send_text(req, "id out of range", 400);
-    /* Refuse pairing a radio id another sensor already claims. */
-    CFG_LOCK();
-    for (int i = 0; i < s_cfg->sensor_count; i++) {
-        if (s_cfg->sensors[i].radio_id == rid)
-            CFG_RET(send_text(req, "radio id already in use", 400));
-    }
+    if (!ok) return;
+    he_config_lock();
+    sensor_t *target = NULL;
     /* Pair with the first sensor slot that has no radio yet; grow only when
      * the table has no free slot (wired sensors may hold radio_id 0). */
-    sensor_t *target = NULL;
     for (int i = 0; i < s_cfg->sensor_count; i++) {
         if (s_cfg->sensors[i].radio_id == 0 && s_cfg->sensors[i].id != 0) {
             target = &s_cfg->sensors[i];
@@ -1189,6 +1184,9 @@ static esp_err_t h_lora_pair_post(httpd_req_t *req)
         target->active = true;
         target->sim_src = SIM_SRC_REAL;
         target->quality = QUAL_TIMEOUT;
+        /* A fresh slot must count toward the system average: weight 0 would
+         * leave a sole sensor contributing nothing (system temp stays NaN). */
+        target->weight = 1.0f;
     }
     if (target) {
         target->radio_id = (uint8_t)rid;
@@ -1198,14 +1196,45 @@ static esp_err_t h_lora_pair_post(httpd_req_t *req)
         sensor_manager_bind(s_cfg->sensors, s_cfg->sensor_count,
                             s_cfg->has_external ? &s_cfg->sensors[HE_MAX_SENSORS] : NULL);
         storage_save_config(s_cfg);
+        char ev[48];
+        snprintf(ev, sizeof(ev), "pairing: sensor slot bound to T%d", rid);
+        storage_log_event(FAULT_NONE, 0, ev);
+    } else {
+        he_config_unlock();
+        storage_log_event(FAULT_NONE, 0, "pairing confirmed but no free sensor slot");
+        return;
     }
     he_config_unlock();
-    if (!target) return send_text(req, "no free sensor slot", 400);
-    /* UART broadcast sleeps — must run outside the config lock. */
-    lora_pair_assign(rid);
-    /* Background verification: the node should come back announcing T<rid>. */
-    lora_unpair_verify_start(rid, HE_UNPAIR_VERIFY_SEC);
-    return send_text(req, "ok", 200);
+}
+
+static esp_err_t h_lora_pair_post(httpd_req_t *req)
+{
+    char vs[8];
+    if (!qarg(req, "id", vs, sizeof(vs))) return send_text(req, "missing id", 400);
+    int rid = atoi(vs);
+    if (rid < 1 || rid > HE_MAX_SENSORS) return send_text(req, "id out of range", 400);
+    /* Refuse pairing a radio id another sensor already claims. */
+    CFG_LOCK();
+    for (int i = 0; i < s_cfg->sensor_count; i++) {
+        if (s_cfg->sensors[i].radio_id == rid)
+            CFG_RET(send_text(req, "radio id already in use", 400));
+    }
+    he_config_unlock();
+    if (lora_pair_busy()) return send_text(req, "pairing already in progress", 409);
+    if (!lora_pair_start(rid, pair_result_cb))
+        return send_text(req, "cannot start pairing", 500);
+    return send_text(req, "pairing started", 200);
+}
+
+/* ---- /api/lora/unpair/status (GET) — pairing job state for the UI watch ----
+ * The pairing modal polls this while the PR broadcast/retry job is in
+ * flight: "pending" keeps it waiting, "confirmed" closes it (the sensor
+ * slot now exists), "failed" reports the node never answered. */
+static esp_err_t h_lora_pair_status_get(httpd_req_t *req)
+{
+    char b[32];
+    snprintf(b, sizeof(b), "{\"state\":\"%s\"}", lora_pair_state());
+    return send_json(req, b);
 }
 
 /* ---- /api/lora/unpair?id=N (POST) — delete a LoRa sensor ----
@@ -1499,6 +1528,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/lora/pair",   .method = HTTP_GET,  .handler = h_lora_pair_get,  .user_ctx = NULL },
     { .uri = "/api/lora/pair",   .method = HTTP_POST, .handler = h_lora_pair_post, .user_ctx = NULL },
     { .uri = "/api/lora/unpair", .method = HTTP_POST, .handler = h_lora_unpair_post, .user_ctx = NULL },
+    { .uri = "/api/lora/unpair/status", .method = HTTP_GET, .handler = h_lora_pair_status_get, .user_ctx = NULL },
     { .uri = "/api/lora/send", .method = HTTP_POST, .handler = h_lora_send,  .user_ctx = NULL },
     { .uri = "/api/ota",       .method = HTTP_POST, .handler = h_ota,         .user_ctx = NULL },
 };

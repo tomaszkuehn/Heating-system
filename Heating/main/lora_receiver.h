@@ -52,33 +52,34 @@ typedef struct {
 /* Maximum nodes tracked for the pairing scanner (same as HE_MAX_SENSORS). */
 #define HE_PAIR_DESC_MAX  HE_MAX_SENSORS
 
-/* Verification window = 3 × the nominal node frame period (~3 × 21 s). */
-#define HE_UNPAIR_VERIFY_CYCLES  3
-#define HE_UNPAIR_VERIFY_SEC     (HE_UNPAIR_VERIFY_CYCLES * HE_LORA_FRAME_PERIOD_MS / 1000)
+/* ---- Over-the-air pairing (async state machine) ----
+ * lora_pair_start() assigns a radio id to an unpaired node: up to
+ * HE_PAIR_ATTEMPTS broadcasts of <0x02 0xE3>PR<id>T9#, each followed by
+ * HE_PAIR_ACK_WINDOW_MS of listening. The job succeeds only when the node
+ * comes back announcing the new id — the window is deliberately longer
+ * than the longest possible node frame gap (LoRa.txt: 20 s + 0-2 s jitter).
+ * Without that announcement the broadcast is repeated; after the last
+ * failed attempt the job ends as failed and NO sensor slot is created.
+ * on_result runs in the worker task context (may take the config lock). */
+#define HE_PAIR_ATTEMPTS        3
+#define HE_PAIR_ACK_WINDOW_MS   (HE_LORA_FRAME_PERIOD_MS + 9000)
+typedef void (*lora_pair_result_fn_t)(int rid, bool ok);
+
+/* Start a pairing job. Returns false when rid is out of range or another
+ * job is already in flight. */
+bool lora_pair_start(int rid, lora_pair_result_fn_t on_result);
+bool lora_pair_busy(void);
+/* "idle" | "pending" | "confirmed" | "failed" — polled by the UI watch. */
+const char *lora_pair_state(void);
 
 /* Latest announcements indexed by radio id. The UI polls
  * lora_pair_request() to enumerate available devices. */
 void lora_pair_request(lora_node_desc_t *nodes, int *count, int max);
 
-/* Broadcast the binary pairing command to assign an id to the unpaired node
- * (id 1..HE_MAX_SENSORS): <0x02 0xE3>PR<id>T9# (LoRa.txt, Arduino node).
- * A node holding factory id 0 stores <id> on receipt. */
-void lora_pair_assign(int id);
-
 /* Manually transmit a raw LoRa frame typed in the UI debug form. The frame
  * is sent as typed ('&' appended when missing), repeated 6× so it lands in
  * a node's RX window, and logged to the event log. */
 void lora_raw_send(const char *frame);
-
-/* ---- Pairing/unpair verification (async, non-blocking) ----
- * After a PR broadcast arm a verification window of
- * HE_UNPAIR_VERIFY_CYCLES node cycles. The scanner watches whether the
- * node starts announcing the expected id. If the window elapses without
- * seeing it, the command failed. */
-void lora_unpair_verify_start(int expect_id, int window_s);
-/* 0 = idle, 1 = pending, 2 = confirmed (expected id seen), 3 = failed. */
-int  lora_unpair_verify_state(void);
-void lora_unpair_verify_clear(void);
 
 /* ---- Radio-frame diagnostics (UI link-loss %) ----
  * Cumulative counters since boot, RAM-only:

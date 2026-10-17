@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_system.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -60,6 +61,28 @@ static bool node_id_save(uint8_t id)
     nvs_close(h);
     if (e == ESP_OK) g_node_id = id;
     return e == ESP_OK;
+}
+
+/* Parse the binary pairing frame "<0x02 0xE3>PR<id>T9#" (LoRa.txt).
+ * lora_receive_line() consumes the '#' terminator, so it is optional here.
+ * Returns the requested id (1..HE_MAX_SENSORS) or 0 when absent/invalid. */
+static int parse_pair_bin(const char *line)
+{
+    size_t len = strlen(line);
+    if (len > 0 && line[len - 1] == '#') len--;
+    if (len < 7 || (uint8_t)line[0] != 0x02 || (uint8_t)line[1] != 0xE3) return 0;
+    const char *t = NULL;
+    for (ssize_t i = (ssize_t)len - 1; i >= 2; i--)
+        if (line[i] == 'T') { t = line + i; break; }
+    if (!t || t[1] != '9' || t == line + 2) return 0;
+    size_t plen = (size_t)(t - (line + 2));
+    if (plen < 3 || plen > 8 || line[2] != 'P' || line[3] != 'R') return 0;
+    char idbuf[8];
+    memcpy(idbuf, line + 4, plen - 2);
+    idbuf[plen - 2] = '\0';
+    int n = atoi(idbuf);
+    if (n < 1 || n > HE_MAX_SENSORS) return 0;
+    return n;
 }
 
 /* Parse "PAIR <id> <nonce> <tag>" (controller -> node). Verifies the
@@ -232,9 +255,28 @@ static void pairing_loop(void)
         if (rc > 0) {
             ESP_LOGI(TAG, "rx frame: \"%s\"", line);
             uint32_t nonce = 0;
-            int new_id = parse_pair(line);
-            if (new_id > 0 && !pair_nonce(line, &nonce)) new_id = 0;
-            if (new_id > 0 && nonce_seen_or_store(nonce) && node_id_save((uint8_t)new_id)) {
+            /* Binary PR<id>T9# first (LoRa.txt, current controller); the
+             * legacy signed text PAIR frame is still accepted as a
+             * fallback for older controller builds. */
+            int new_id = parse_pair_bin(line);
+            if (new_id > 0) {
+                if (node_id_save((uint8_t)new_id)) {
+                    char ack[16];
+                    snprintf(ack, sizeof(ack), "OK T%02d&", new_id);
+                    lora_write((const uint8_t *)ack, strlen(ack));
+                    lora_write((const uint8_t *)"\r\n", 2);
+                    ESP_LOGI(TAG, "paired as T%02d", new_id);
+                    return;   /* back to normal operation */
+                }
+                continue;
+            }
+            new_id = parse_pair(line);
+            bool fresh = false;
+            if (new_id > 0) {
+                if (!pair_nonce(line, &nonce)) new_id = 0;
+                else fresh = !nonce_seen_or_store(nonce);
+            }
+            if (new_id > 0 && fresh && node_id_save((uint8_t)new_id)) {
                 char ack[16];
                 snprintf(ack, sizeof(ack), "OK T%02d&", new_id);
                 lora_write((const uint8_t *)ack, strlen(ack));
@@ -303,6 +345,7 @@ static void sensor_task(void *arg)
 {
     static int status = HE_STATUS_OK;
     esp_task_wdt_add(NULL);
+    int64_t next_frame_us = 0;
 
     for (;;) {
         esp_task_wdt_reset();
@@ -351,8 +394,14 @@ static void sensor_task(void *arg)
             esp_restart();
         }
 
-        /* Period between cycles. */
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        /* Period between frames: 20 s + 0-2 s jitter (LoRa.txt), measured
+         * start-to-start — the cycle body (ACK listen, probe reads) counts
+         * toward the interval instead of being added on top. */
+        int64_t now = esp_timer_get_time();
+        next_frame_us += (int64_t)(HE_LORA_FRAME_PERIOD_MS +
+                                   (int)(esp_random() % HE_LORA_FRAME_JITTER_MS)) * 1000;
+        if (next_frame_us < now) next_frame_us = now + 100000;
+        vTaskDelay(pdMS_TO_TICKS((next_frame_us - now) / 1000));
     }
 }
 

@@ -110,7 +110,7 @@ int lora_receive_line(uint32_t window_ms, char *buf, size_t buflen)
         int got = uart_read_bytes(HE_LORA_UART, &b, 1, pdMS_TO_TICKS(20));
         if (got <= 0) continue;
         if (b == '\r') continue;
-        if (b == '\n' || b == '&') {
+        if (b == '\n' || b == '&' || b == '#') {
             if (n == 0) continue;          /* stray terminator */
             buf[n] = '\0';
             return (int)n;
