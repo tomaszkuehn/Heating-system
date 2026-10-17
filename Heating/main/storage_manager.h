@@ -111,6 +111,7 @@ typedef struct {
 #define HE_SAMPLE_FLUSH_BATCH   15
 
 #define HE_LOG_MAX_ENTRIES      100   /* in-RAM event ring (see storage_manager.c) */
+#define HE_DAILY_MAX_ROWS       730   /* cap daily.csv rows (~2 yr); oldest pruned */
 #define HE_SAMPLE_RETAIN_DAYS   2     /* keep today+yesterday; prune older    */
 
 /* Flash wear assessment (ESP32 NOR flash: ~100 000 erase cycles / 4 KB sector). */

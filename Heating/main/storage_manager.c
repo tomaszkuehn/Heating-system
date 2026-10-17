@@ -440,11 +440,13 @@ static void dedup_daily_csv(void)
     ESP_LOGI(TAG, "daily.csv deduped (%d -> %d rows)", total, n);
 }
 
+/* Keep at most `keep_rows` newest rows of daily.csv; drop the oldest. */
+static void prune_daily_csv(int keep_rows);
+
 /* Compute one daily aggregate from ring-buffer samples for a given day key,
  * then append a single line to daily.csv (~20 bytes). */
 static void aggregate_day(int key)
-{
-    if (!s_lfs_ok || key <= 0) return;
+{    if (!s_lfs_ok || key <= 0) return;
 
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
 
@@ -470,6 +472,10 @@ static void aggregate_day(int key)
 
     if (n == 0) return;
 
+    /* Cap daily.csv: drop oldest rows when over the limit so the file never
+     * grows unbounded (one row/day, ~2 yr retained). */
+    prune_daily_csv(HE_DAILY_MAX_ROWS);
+
     /* Re-acquire for the daily.csv append (short critical section). */
     xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
     FILE *d = fopen(FS_DAILY, "a");
@@ -482,6 +488,43 @@ static void aggregate_day(int key)
         if (w > 0) account_fs_write((size_t)w);
     }
     xSemaphoreGive(s_fs_mutex);
+}
+
+/* Keep at most `keep_rows` newest rows of daily.csv; drop the oldest.
+ * Rewrites the file via a .tmp file using only a per-line buffer (no large
+ * static array, to stay within DRAM). Call under s_fs_mutex. */
+static void prune_daily_csv(int keep_rows)
+{
+    FILE *f = fopen(FS_DAILY, "r");
+    if (!f) return;
+    int n = 0;
+    char line[64];
+    while (fgets(line, sizeof(line), f)) n++;
+    fclose(f);
+    if (n <= keep_rows) return;
+
+    int drop = n - keep_rows;
+    FILE *r = fopen(FS_DAILY, "r");
+    FILE *w = fopen(FS_DAILY ".tmp", "w");
+    if (!r || !w) {
+        if (r) fclose(r);
+        if (w) fclose(w);
+        remove(FS_DAILY ".tmp");
+        return;
+    }
+    int skipped = 0;
+    size_t wr = 0;
+    while (fgets(line, sizeof(line), r)) {
+        if (skipped < drop) { skipped++; continue; }
+        size_t L = strlen(line);
+        if (L > 0) wr += fwrite(line, 1, L, w);
+    }
+    fclose(r);
+    fclose(w);
+    if (wr > 0) account_fs_write(wr);
+    remove(FS_DAILY);
+    rename(FS_DAILY ".tmp", FS_DAILY);
+    ESP_LOGI(TAG, "daily.csv pruned: dropped %d rows, kept %d", drop, keep_rows);
 }
 
 /* Delete per-day sample files whose YYYYMMDD key predates keep_key.
