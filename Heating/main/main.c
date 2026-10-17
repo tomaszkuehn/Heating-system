@@ -196,6 +196,9 @@ static void repair_config(system_config_t *c)
                 c->sensors[k].weight = 1.0f / 3.0f;
                 c->sensors[k].sim_src = SIM_SRC_REAL;
                 c->sensors[k].radio_id = (uint8_t)(k + 1);
+                c->sensors[k].quality = QUAL_TIMEOUT;
+                c->sensors[k].last_effective = he_nan();
+                c->sensors[k].last_raw = he_nan();
             }
             break;
         }

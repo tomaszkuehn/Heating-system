@@ -321,8 +321,15 @@ void control_tick(int dt_ms)
             m.heating_active = s_relay ? 1 : 0;
             m.state = (uint8_t)s_state;
             for (int i = 0; i < HE_MAX_SENSORS; i++) {
-                m.per_sensor[i] = (i < total && s_cfg->sensors[i].active)
-                                  ? s_cfg->sensors[i].last_effective : he_nan();
+                /* Only sensors with accepted data belong in the per-sensor
+                 * history: a fresh slot (e.g. just paired, still in warmup)
+                 * has last_effective unset — recording it would plot 0 C. */
+                const sensor_t *sp = (i < total) ? &s_cfg->sensors[i] : NULL;
+                m.per_sensor[i] = (sp && sp->active &&
+                                   (sp->quality == QUAL_OK ||
+                                    sp->quality == QUAL_SIMULATED) &&
+                                   !he_isnan(sp->last_effective))
+                                      ? sp->last_effective : he_nan();
             }
             storage_record_minute(&m);
         }

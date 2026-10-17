@@ -47,14 +47,24 @@ i ścieżka konfiguracyjna. Kluczowe cechy portu na WT32-ETH01 V1.4:
 
 ### Wgrywanie OTA (kabel zamiast przycinania)
 
-Panel: `POST /api/ota` (binarna zawartość = firmware). Przykład:
+Panel: `POST /api/ota` (binarna zawartość = firmware). Przykład (login + upload
+w jednym wywołaniu curl):
 
 ```bash
-curl -X POST http://10.168.34.55/api/ota --data-binary @heating_ctrl.bin
+curl -s -c /tmp/hc.txt -X POST -d '{"user":"admin","pass":"12345678"}' http://10.168.34.55/api/login >/dev/null
+curl -s -m 240 -b /tmp/hc.txt -X POST -H 'Content-Type: application/octet-stream' \
+  --data-binary @heating_ctrl.bin http://10.168.34.55/api/ota
 ```
 
-Partycje A/B OTA (`ota_0`/`ota_1` po 3 MB, flash 8 MB) — nowy obraz trafia do
-nieaktywnej partycji i po udanej weryfikacji urządzenie restartuje się do niej.
+**Okno samo-weryfikacji po restarcie:** bezpośrednio po bootcie (~180 s)
+aplikacja jest w stanie PENDING_VERIFY i `esp_ota_begin` odrzuca każdy upload
+(`ESP_ERR_OTA_ROLLBACK_INVALID_STATE`). To normalne, chwilowe — poczekaj >
+3 min od restartu, potem OTA przejdzie (`POST /api/restart` po zalogowaniu
+wykonuje zdalny reboot). Odpowiedź błędu zawiera nazwę kodu i wolny heap.
+Nowy obraz trafia do nieaktywnej partycji OTA i po udanej weryfikacji urządzenie
+restartuje się do niej.
+
+`/api/state` zwraca `uptime` w **milisekundach** (nie sekundach).
 
 ## Architektura (spec pkt 13)
 
@@ -262,7 +272,9 @@ dawniej była błędnie traktowana jako ogłoszenie `T00` z temperaturą NaN.
   bufor bezpośrednio (`storage_ring_copy()`), więc zawsze pokazuje najświeższe
   dane, przewija się w lewo i **nie zużywa flasha**. Skutek uboczny: po zaniku
   zasilania wykres 24 h startuje pusty (dane ulotne), ale konfiguracja i
-  agregaty dobowe przetrwają.
+  agregaty dobowe przetrwają. Kolumna per-czujnik w historii pokazuje NaN
+  (brak danych) podczas rozgrzewki nowego czujnika (pierwsze odczyty odrzucane
+  w `HE_WARMUP_READINGS`), a nie 0 °C.
 
 ### Ochrona flash przed szybkim zużyciem
 

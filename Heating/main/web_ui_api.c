@@ -675,6 +675,8 @@ static esp_err_t h_sensors_count(httpd_req_t *req)
         s->weight = 1.0f / (float)n;
         s->sim_src = SIM_SRC_REAL;
         s->quality = QUAL_TIMEOUT;
+        s->last_effective = he_nan();
+        s->last_raw = he_nan();
     }
     /* Re-normalise weights so they sum to 1 across active sensors. */
     float wsum = 0; for (int i = 0; i < n; i++) wsum += s_cfg->sensors[i].weight;
@@ -1184,6 +1186,10 @@ static void pair_result_cb(int rid, bool ok)
         target->active = true;
         target->sim_src = SIM_SRC_REAL;
         target->quality = QUAL_TIMEOUT;
+        /* No data yet: NaN, so history/UI never plots a bogus 0 C reading
+         * during the warmup window before the first accepted frame. */
+        target->last_effective = he_nan();
+        target->last_raw = he_nan();
         /* A fresh slot must count toward the system average: weight 0 would
          * leave a sole sensor contributing nothing (system temp stays NaN). */
         target->weight = 1.0f;
@@ -1439,10 +1445,13 @@ static esp_err_t h_ota(httpd_req_t *req)
     esp_ota_handle_t oh = 0;
     esp_err_t er = esp_ota_begin(pt, OTA_WITH_SEQUENTIAL_WRITES, &oh);
     if (er != ESP_OK) {
+        char eb[96];
         ESP_LOGE(TAG, "ota_begin failed: %s (target %s, size %ld, free heap %u)",
                  esp_err_to_name(er), pt->label, (long)pt->size,
                  (unsigned)esp_get_free_heap_size());
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota_begin failed");
+        snprintf(eb, sizeof(eb), "ota_begin failed: %s (heap %u)",
+                 esp_err_to_name(er), (unsigned)esp_get_free_heap_size());
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, eb);
         return ESP_OK;
     }
 
@@ -1470,7 +1479,9 @@ static esp_err_t h_ota(httpd_req_t *req)
 
     er = esp_ota_end(oh);
     if (er != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ota_end failed");
+        char eb[64];
+        snprintf(eb, sizeof(eb), "ota_end failed: %s", esp_err_to_name(er));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, eb);
         return ESP_OK;
     }
     er = esp_ota_set_boot_partition(pt);
@@ -1482,6 +1493,17 @@ static esp_err_t h_ota(httpd_req_t *req)
     send_json(req, "{\"ok\":true,\"msg\":\"firmware updated, rebooting\"}");
 
     /* Defer reboot so the HTTP response is flushed first. */
+    xTaskCreate((void (*)(void *))esp_restart, "reboot", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
+/* ---- /api/restart (POST) — graceful remote reboot ----
+ * Replies first, then reboots from a tiny throwaway task so the HTTP
+ * response is flushed. Lets maintenance clear wedged OTA/heap/session
+ * state without physical access. */
+static esp_err_t h_restart(httpd_req_t *req)
+{
+    send_json(req, "{\"ok\":true,\"msg\":\"rebooting\"}");
     xTaskCreate((void (*)(void *))esp_restart, "reboot", 2048, NULL, 5, NULL);
     return ESP_OK;
 }
@@ -1517,6 +1539,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/sim/sensor",  .method = HTTP_POST, .handler = h_sim_sensor,  .user_ctx = NULL },
     { .uri = "/api/sim/heating", .method = HTTP_POST, .handler = h_sim_heating, .user_ctx = NULL },
     { .uri = "/api/fault/clear", .method = HTTP_POST, .handler = h_fault_clear, .user_ctx = NULL },
+    { .uri = "/api/restart",  .method = HTTP_POST, .handler = h_restart,     .user_ctx = NULL },
     { .uri = "/api/limits", .method = HTTP_POST, .handler = h_limits,          .user_ctx = NULL },
     { .uri = "/api/samples", .method = HTTP_GET,  .handler = h_samples,      .user_ctx = NULL },
     { .uri = "/api/daily",   .method = HTTP_GET,  .handler = h_daily,        .user_ctx = NULL },

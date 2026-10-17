@@ -41,6 +41,12 @@ cd Sensor  && idf.py build     # czujnik   -> build/ds18x20_sensor.bin
 
 - **Sterownik — OTA:** `POST /api/login` (`admin`), potem `POST /api/ota`
   z surowym `heating_ctrl.bin` (`Content-Type: application/octet-stream`).
+  **Uwaga — okno samo-weryfikacji OTA:** bezpośrednio po restarcie (~180 s)
+  aplikacja jest w stanie PENDING_VERIFY i `esp_ota_begin` odrzuca każdy upload
+  (`ESP_ERR_OTA_ROLLBACK_INVALID_STATE`). To normalne, chwilowe — poczekaj >
+  3 min od bootu, potem OTA przejdzie. Odpowiedź błędu zawiera nazwę kodu i
+  wolny heap. `POST /api/restart` (po zalogowaniu) wykonuje zdalny reboot.
+- `/api/state` zwraca `uptime` w **milisekundach** (nie sekundach).
 - **Czujnik — flash:** `idf.py -p COMx flash` (przy trudności z wejściem
   w tryb download przytrzymaj BOOT; UWAGA: trzymanie BOOT ≥ 5 s kasuje
   sparowane ID — patrz `Sensor/README.md`).
