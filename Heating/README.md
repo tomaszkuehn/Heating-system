@@ -192,16 +192,23 @@ Szczegóły w `LoRa.txt` (katalog główny repozytorium).
 
 ### Parowanie węzłów LoRa (dodanie czujnika / zmiana ID)
 
-- Węzeł niesparowany (ID 0) ogłasza się co cykl binarnie: `02 E3 <temp> T0#`.
+- Węzeł niesparowany (ID 0) ogłasza się binarnie `02 E3 <temp> T0#` (pętla:
+  okno nasłuchu 5 s + 1 s przerwy, czyli co ~6 s; bez sondy zamiast temperatury
+  wysyła `ERR`).
 - Węzeł sparowany nadaje `02 E3 <temp> T<n>#`.
-- Kontroler potwierdza adresowany pomiar: `02 E3 X<id>T9#`. Węzeł ignoruje
-  ACK innego ID.
+- Kontroler potwierdza wyłącznie pomiary zarejestrowanych ID 1..8:
+  `02 E3 X<id>T9#`. Węzeł ignoruje ACK innego ID. **Ogłoszenia `T0` nie są
+  potwierdzane** — ramka `X0` nie istnieje w protokole, a okno nasłuchu
+  węzła w trybie parowania zamyka się po dowolnej poprawnej linii, więc zbędny
+  ACK sprowadzałby ogłoszenia do cyklu ~2 s i wyprzedzał ramkę `PR` przy
+  parowaniu. Odpowiedzią parującą jest wyłącznie `PR<n>T9#` z zadania
+  parowania.
 - Węzeł bez odczytu sond wysyła marker błędu `02 E3 ERRT<id>#`.
 
 Procedura parowania (UI → „＋ Dodaj czujnik LoRa" albo banner „Wykryto
 nieskonfigurowany czujnik"):
 
-1. Węzeł w trybie niesparowanym nadaje w pętli ramki `T0` (co ~21 s).
+1. Węzeł w trybie niesparowanym nadaje w pętli ramki `T0` (co ~6 s).
 2. Kontroler rejestruje ostatnie ogłoszenie dla każdego wykrytego ID i
    udostępnia je przez `GET /api/lora/pair` →
    `{"nodes":[{"id":0,"temp":21.9,"age":3}],"free":[2,3,4,5,6]}`.

@@ -286,21 +286,27 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
 {
     bin_log_rx(raw, len);
 
-    if (he_isnan(temp)) {
-        ESP_LOGW(TAG, "sensor T%d reports ERR (bin)", id);
-        he_config_lock();
-        sensor_manager_lora_err(id);
-        he_config_unlock();
-        send_binary_ack(id);
-        return;
-    }
     if (id == 0) {
-        /* Unpaired node announcement (LoRa.txt: factory sensor id is 0). */
+        /* Unpaired node announcement (LoRa.txt: factory sensor id is 0).
+         * Recorded for the pairing UI but NEVER ACKed: "X<id>" is a
+         * measurement receipt for a registered sensor, and the node's
+         * pairing receive window closes on any parseable line — a stray
+         * ack would wake it ~60 ms into the window, long before the
+         * pairing PR broadcast, and squeeze announcements to a 2 s cycle.
+         * Pairing is answered exclusively by the PR broadcast from the
+         * pairing job (send_pair_broadcast). */
         s_pair_nodes[0].id = 0;
         s_pair_nodes[0].temp = temp;
         s_pair_nodes[0].age_s = 0;
         pair_verify_note(0);
         ESP_LOGI(TAG, "pairing request (bin): T0 = %.2f C", temp);
+        return;
+    }
+    if (he_isnan(temp)) {
+        ESP_LOGW(TAG, "sensor T%d reports ERR (bin)", id);
+        he_config_lock();
+        sensor_manager_lora_err(id);
+        he_config_unlock();
         send_binary_ack(id);
         return;
     }
