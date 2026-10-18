@@ -444,6 +444,25 @@ function renderSensors(sensors) {
     }
     tb.appendChild(tr);
   });
+  /* Pairing-in-progress placeholder: while a pairing job runs, the sensors
+   * list shows a dashed "new sensor" row. It disappears when the job fails
+   * (no slot is created) and swaps into the real row the moment the slot
+   * with that radio id materialises (self-clears on that refresh). */
+  if (pendingPair && pendingPair.rid) {
+    if (sensors.some(sx => sx.radio_id === pendingPair.rid)) {
+      pendingPair = null;
+    } else {
+      const tr = document.createElement('tr');
+      tr.style.cssText = 'opacity:.85';
+      tr.innerHTML = `
+        <td><span style="color:var(--accent);font-weight:600">📡${pendingPair.rid}</span></td>
+        <td colspan="7"><i style="color:var(--accent)">Nowy czujnik — w trakcie parowania…</i></td>
+        <td class="qcell" style="color:var(--warn)">PAROWANIE…</td>
+        <td class="ecell">--</td>
+        <td></td>`;
+      tb.appendChild(tr);
+    }
+  }
   /* Close sensor detail panel. */
   const sdc = $('sensorDetailClose');
   if (sdc) sdc.onclick = () => $('sensorDetail').classList.add('hidden');
@@ -632,25 +651,31 @@ function openPairModal() {
 function closePairModal() { stopPairModalTimer(); $('pairModal').classList.add('hidden'); }
 
 /* ---- Pairing verification watch ----
- * Polls /api/lora/unpair/status while a signed PAIR broadcast is in
- * flight; the controller-side scanner confirms the node's T<id>
- * announcement (confirmed) or reports timeout (failed). */
+ * Polls /api/lora/unpair/status while a PR broadcast is in flight; the
+ * controller-side scanner confirms the node's T<id> announcement (confirmed)
+ * or reports timeout (failed). While pending, `pendingPair` drives the
+ * "pairing in progress" row in the sensors table. */
 let unpairWatchTimer = null;
+let pendingPair = null;
 function startUnpairWatch(radioId) {
   stopUnpairWatch();
   const banner = $('pairBanner'), info = $('pairInfo');
+  pendingPair = { rid: radioId };
   info.textContent = `Parowanie węzła na ID ${radioId}: czekam na potwierdzenie (ogłoszenie T${radioId})…`;
   banner.classList.remove('hidden');
+  refresh();   /* show the placeholder row immediately */
   unpairWatchTimer = setInterval(async () => {
     const st = await api('/api/lora/unpair/status');
     if (!st) return;
     if (st.state === 'pending') return;                      /* keep waiting */
     stopUnpairWatch();
+    pendingPair = null;
     if (st.state === 'confirmed') {
       info.textContent = `Węzeł sparowany jako ID ${radioId} — potwierdzono.`;
     } else {
       info.textContent = `Parowanie na ID ${radioId} NIE zostało potwierdzone — węzeł poza zasięgiem lub zajęty. Spróbuj ponownie.`;
     }
+    await refresh();
     setTimeout(() => { if (!unpairWatchTimer) banner.classList.add('hidden'); }, 15000);
   }, 2000);
 }
@@ -1267,6 +1292,12 @@ document.querySelectorAll('.zoom-btn').forEach(b => {
 });
 
 refresh().then(load24h).then(() => populateSensorToggles(lastState && lastState.sensors)); loadDiag(); loadLog(); loadDaily();
+/* Resume the pairing watch after a page reload (controller job may still be
+ * in flight): status carries the rid, so restore the pendingPair placeholder. */
+(async () => {
+  const st = await api('/api/lora/unpair/status');
+  if (st && st.state === 'pending' && st.rid >= 1) startUnpairWatch(st.rid);
+})();
 setInterval(() => refresh(true), 2000);
 setInterval(loadDiag, 5000);
 setInterval(loadLog, 10000);

@@ -71,6 +71,9 @@ bool lora_pair_start(int rid, lora_pair_result_fn_t on_result);
 bool lora_pair_busy(void);
 /* "idle" | "pending" | "confirmed" | "failed" — polled by the UI watch. */
 const char *lora_pair_state(void);
+/* Radio id of the current/last pairing job (0 when idle). The UI uses it to
+ * restore the "pairing in progress" sensor-list placeholder after a reload. */
+int lora_pair_rid(void);
 
 /* Latest announcements indexed by radio id. The UI polls
  * lora_pair_request() to enumerate available devices. */

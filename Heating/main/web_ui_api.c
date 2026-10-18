@@ -1295,8 +1295,9 @@ static esp_err_t h_lora_pair_post(httpd_req_t *req)
  * slot now exists), "failed" reports the node never answered. */
 static esp_err_t h_lora_pair_status_get(httpd_req_t *req)
 {
-    char b[32];
-    snprintf(b, sizeof(b), "{\"state\":\"%s\"}", lora_pair_state());
+    char b[48];
+    snprintf(b, sizeof(b), "{\"state\":\"%s\",\"rid\":%d}",
+             lora_pair_state(), lora_pair_rid());
     return send_json(req, b);
 }
 

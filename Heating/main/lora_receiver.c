@@ -112,6 +112,11 @@ const char *lora_pair_state(void)
     }
 }
 
+int lora_pair_rid(void)
+{
+    return (s_pair_state == PAIR_IDLE) ? 0 : s_pair.rid;
+}
+
 static void pair_task(void *arg)
 {
     (void)arg;
