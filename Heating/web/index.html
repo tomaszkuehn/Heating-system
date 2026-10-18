@@ -139,6 +139,15 @@
   <section class="card collapsible collapsed">
     <h2 class="card-toggle"><span class="chev">▸</span> Profil dobowy (24 h)</h2>
     <div class="profile-grid" id="profileGrid"></div>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px">
+      <span style="font-size:13px;color:var(--muted)">Korekta całości:</span>
+      <button id="pShiftM1" class="btn" style="padding:5px 10px" title="Obniż wszystkie wartości o 1 °C">−1</button>
+      <button id="pShiftM025" class="btn" style="padding:5px 10px" title="Obniż wszystkie wartości o 0,25 °C">−0,25</button>
+      <button id="pShiftP025" class="btn" style="padding:5px 10px" title="Podnieś wszystkie wartości o 0,25 °C">+0,25</button>
+      <button id="pShiftP1" class="btn" style="padding:5px 10px" title="Podnieś wszystkie wartości o 1 °C">+1</button>
+      <span id="pShiftBadge" class="hidden" style="font-size:12px;font-weight:600" title="Łączny wynik korekty przyciskami (ręczne edycje komórek nie są liczone)"></span>
+      <button id="pShiftReset" class="btn" style="background:#444;padding:5px 10px" title="Przywróć wartości ostatnio zapisane na sterowniku">↺ Oryginał</button>
+    </div>
     <div class="actions">
       <button id="btnProfileApply" class="btn">Zastosuj (waliduj + zapisz)</button>
     </div>

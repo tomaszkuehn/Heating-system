@@ -472,6 +472,9 @@ function renderSensors(sensors) {
 }
 
 let profileEdited = false;
+/* Last server-loaded profile values (reset target for the shift toolbar). */
+let profileBaseline = null;
+let profileShift = 0;
 function renderProfile(p) {
   const g = $('profileGrid'); g.innerHTML = '';
   (p || []).forEach((h, idx) => {
@@ -482,6 +485,32 @@ function renderProfile(p) {
     d.querySelectorAll('input').forEach(i => i.oninput = () => profileEdited = true);
     g.appendChild(d);
   });
+  profileBaseline = (p || []).map(x => [+x[0], +x[1]]);
+  profileShift = 0;
+  updateProfileShiftBadge();
+}
+
+/* ---- Global profile shift ----
+ * Uniform ± correction of all hourly ON/OFF pairs. A uniform shift keeps
+ * on<off and the >=0.2 °C hysteresis gap, so only the server's logical
+ * range (HE_TEMP_MIN/MAX_LOGICAL -40..85) needs clamping; empty/NaN cells
+ * are left untouched for the user's mid-typing state. */
+function updateProfileShiftBadge() {
+  const b = $('pShiftBadge'); if (!b) return;
+  if (!profileShift) { b.classList.add('hidden'); return; }
+  b.classList.remove('hidden');
+  b.textContent = 'Δ ' + (profileShift > 0 ? '+' : '') + profileShift.toFixed(2) + ' °C';
+  b.style.color = profileShift > 0 ? '#22c55e' : '#f59e0b';
+}
+function profileShiftApply(delta) {
+  const clamp = v => Math.min(85, Math.max(-40, Math.round((v + delta) * 100) / 100));
+  $('profileGrid').querySelectorAll('[data-h]').forEach(inp => {
+    const v = parseFloat(inp.value);
+    if (!isNaN(v)) inp.value = clamp(v);
+  });
+  profileEdited = true;
+  profileShift = Math.round((profileShift + delta) * 100) / 100;
+  updateProfileShiftBadge();
 }
 function collectProfile() {
   const arr = [];
@@ -1213,6 +1242,16 @@ $('btnNotifyEv').onclick = () => post('/api/notify/events', { faults: $('nEvFaul
 $('btnSimHeat').onclick = () => post('/api/sim/heating', { enabled: $('simHeat').checked, mixed: $('simMixed').checked, accel: $('simAccel').checked, mode: +$('simMode').value, heat_rate: +$('simHR').value, cool_rate: +$('simCR').value, inertia: +$('simIn').value }, true).then(() => refresh()).then(load24h);
 $('btnSimSen').onclick = () => post('/api/sim/sensor?id=' + $('simSenId').value, { src: +$('simSenSrc').value, base: +$('simSenBase').value, rate: 0.1, target: 0 }, true).then(() => refresh()).then(load24h);
 $('btnProfileApply').onclick = () => { profileEdited = false; post('/api/profile', collectProfile(), true).then(() => refresh()); };
+/* Global profile shift toolbar (+/-1 / +/-0.25, badge, restore-from-server). */
+$('pShiftM1').onclick    = () => profileShiftApply(-1);
+$('pShiftM025').onclick  = () => profileShiftApply(-0.25);
+$('pShiftP025').onclick  = () => profileShiftApply(0.25);
+$('pShiftP1').onclick    = () => profileShiftApply(1);
+$('pShiftReset').onclick = () => {
+  if (!profileBaseline) return;
+  renderProfile(profileBaseline.map(x => x.slice()));
+  profileEdited = false;
+};
 /* Profile slots: one-click save/load for 3 named profiles on the device. */
 document.querySelectorAll('.pslot-save').forEach(btn => {
   btn.onclick = () => {
