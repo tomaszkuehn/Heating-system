@@ -219,15 +219,23 @@ nieskonfigurowany czujnik"):
    w jego okno odbioru), a po każdej próbie 30-sekundowe okno nasłuchu
    (dłuższe niż najdłuższy możliwy odstęp ramek węzła wg `LoRa.txt`:
    20 s + 0..2 s). Bieżący stan zadania zwraca
-   `GET /api/lora/unpair/status` → `{"state":"pending|confirmed|failed"}`.
+   `GET /api/lora/unpair/status` → `{"state":"pending|confirmed|failed","rid":N}`
+   (`rid` pozwala UI wznowić wiersz „w trakcie parowania" po odświeżeniu strony).
 4. Parowanie jest **potwierdzone wyłącznie wtedy, gdy węzeł zacznie
    ogłaszać się nowym ID `T<n>`** — dopiero wtedy tworzony jest slot
    czujnika (nazwa domyślna „Czujnik LoRa %d", waga 1.0) i zapisywana
-   konfiguracja. Po wyczerpaniu prób zadanie kończy się stanem `failed`
-   i **żaden slot nie powstaje** (brak martwych slotów po nieudanym
-   parowaniu). Starsza, tekstowa ramka `PAIR <n>&` z podpisem HMAC nie
-   jest już wysyłana; węzeł ESP-IDF akceptuje ramkę binarną `PR<n>T9#`
-   (fallback: podpisana ramka tekstowa dla starszych buildów kontrolera).
+   konfiguracja. Potwierdzające ogłoszenie jest rejestrowane **przed**
+   bramką ACK (opis „po usunięciu czujki" niżej) — świeżo przypisane ID nie ma
+   jeszcze slota, a właśnie to ogłoszenie zamyka zadanie. Po wyczerpaniu
+   prób zadanie kończy się stanem `failed` i **żaden slot nie powstaje**
+   (brak martwych slotów po nieudanym parowaniu). Starsza, tekstowa ramka
+   `PAIR <n>&` z podpisem HMAC nie jest już wysyłana; węzeł ESP-IDF
+   akceptuje ramkę binarną `PR<n>T9#` (fallback: podpisana ramka tekstowa
+   dla starszych buildów kontrolera).
+   W trakcie parowania lista czujników pokazuje wiersz placeholder
+   „**Nowy czujnik — w trakcie parowania…**" (kolumna Jakość: `PAROWANIE…`):
+   po powodzeniu zastępuje go właściwy wiersz, po porażce znika bez tworzenia
+   czujnika.
 5. Węzeł o ID 0 zapisuje nowe ID w NVS (przetrwa restart) i od tej chwili
    nadaje jako `T<n>`.
 
@@ -375,6 +383,9 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
 - **Wybór czujników na wykresie** — kolorowe checkboxy z nazwą czujnika
   (w jego kolorze linii) pozwalają pokazać/ukryć poszczególne czujniki
   wewnętrzne bez przeładowania strony. Domyślnie wszystkie widoczne.
+  Etykieta to **pierwsze 12 znaków nazwy** (pełna nazwa w dymku `title`);
+  po zmianie nazwy czujnika i „Zapisz" lista przebudowuje się w ramach
+  pełnego odświeżenia strony — nowa nazwa natychmiast widoczna nad wykresem.
 - **Celownik (crosshair) na wykresie 24 h** — najechanie kursorem na pole
   wykresu rysuje dwie przerywane linie: pionową i poziomą. Na górze pionowej
   pokazywany jest wskazywany czas (HH:MM), po prawej poziomej — temperatura
