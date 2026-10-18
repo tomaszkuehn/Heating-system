@@ -125,7 +125,13 @@
       <div id="sensorToggles" style="display:flex;align-items:center;flex-wrap:wrap"></div>
     </div>
     <canvas id="chart24" height="220"></canvas>
-    <h2>Zużycie energii (minuty grzania) — 12 miesięcy (słupki) + śr. systemowa (linia)</h2>
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;justify-content:space-between">
+      <h2 style="margin:0">Zużycie energii (minuty grzania) — 12 miesięcy (słupki) + śr. systemowa (linia)</h2>
+      <span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span id="histClearConfirm" class="hidden"></span>
+        <button id="btnHistClear" class="btn" style="padding:5px 10px;font-size:12px" title="Usuwa wiersze daily.csv z ostatnich 365 dni (wykres zużycia energii). Wykres 24 h i dane starsze niż rok zostają. Podwójne potwierdzenie.">🗑 Wyczyść historię (12 mies.)</button>
+      </span>
+    </div>
     <canvas id="chartDaily" height="180"></canvas>
   </section>
 

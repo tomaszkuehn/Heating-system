@@ -1139,6 +1139,29 @@ static esp_err_t h_log_clear(httpd_req_t *req)
     return send_text(req, "ok", 200);
 }
 
+/* ---- /api/history/clear (POST) ----
+ * Deletes daily.csv rows covering the last 365 days (the energy chart's full
+ * window). Server-side guard: body must carry {"confirm":"WYCZYŚĆ"} so a
+ * stray/empty POST (curl probe, crawler, UI bug) erases nothing. UI enforces a
+ * second, independent confirmation (inline warn + typed phrase). */
+static esp_err_t h_history_clear(httpd_req_t *req)
+{
+    char body[64]; read_body(req, body, sizeof(body));
+    char cfm[16];
+    if (!json_str(body, "confirm", cfm, sizeof(cfm)) || strcmp(cfm, "WYCZYŚĆ") != 0)
+        return send_text(req, "missing/mismatched confirm", 400);
+    int cleared = 0;
+    esp_err_t rc = storage_clear_daily_history(&cleared);
+    if (rc == ESP_ERR_INVALID_STATE) return send_text(req, "clock not synced - cannot derive window", 409);
+    if (rc != ESP_OK) return send_text(req, "clear failed", 500);
+    char buf[96];
+    snprintf(buf, sizeof(buf), "wyczyszczono historię dzienną: %d dni", cleared);
+    storage_log_event(FAULT_NONE, 1, buf);
+    char out[24];
+    snprintf(out, sizeof(out), "{\"cleared\":%d}", cleared);
+    return send_text(req, out, 200);
+}
+
 /* ---- /api/lora/pair (GET) — list of all detected LoRa devices ----
  * The UI polls this to enumerate available nodes and their radio ids.
  * Response: nodes[] = array of {id,temp,age} for every device whose
@@ -1579,6 +1602,7 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/daily",   .method = HTTP_GET,  .handler = h_daily,        .user_ctx = NULL },
     { .uri = "/api/log",     .method = HTTP_GET,  .handler = h_log,          .user_ctx = NULL },
     { .uri = "/api/log/clear", .method = HTTP_POST, .handler = h_log_clear,  .user_ctx = NULL },
+    { .uri = "/api/history/clear", .method = HTTP_POST, .handler = h_history_clear, .user_ctx = NULL },
     { .uri = "/api/diagnostics", .method = HTTP_GET,  .handler = h_diag,      .user_ctx = NULL },
     { .uri = "/api/lora/test",   .method = HTTP_GET,  .handler = h_lora_test, .user_ctx = NULL },
     { .uri = "/api/lora/config", .method = HTTP_POST, .handler = h_lora_config, .user_ctx = NULL },

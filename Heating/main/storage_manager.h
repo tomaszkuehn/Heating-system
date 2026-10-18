@@ -178,6 +178,12 @@ esp_err_t storage_log_event(fault_class_t f, int severity, const char *text);
 esp_err_t storage_read_log(log_entry_t *out, int max, int *count);
 esp_err_t storage_clear_log(void);   /* empty events.log (UI "Wyczyść" button) */
 
+/* Clear daily.csv rows covering the last 365 days ending today (everything the
+ * 365-day energy chart displays). Rows older than the window are kept. Fills
+ * *cleared_days with the number of removed day rows. Fails when wall-clock
+ * time is not yet valid (no real window can be derived). */
+esp_err_t storage_clear_daily_history(int *cleared_days);
+
 /* True if storage subsystem is healthy (used by health marker). */
 bool      storage_healthy(void);
 

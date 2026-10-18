@@ -57,6 +57,12 @@ function post(path, body, isJson) {
   return api(path, { method: 'POST', body: isJson ? JSON.stringify(body) : body,
     headers: isJson ? { 'Content-Type': 'application/json' } : {} });
 }
+/* Shared per-index palette for internal sensors: chart lines, legend toggles
+ * and the sensor-table ID badges all use exactly the same color, so every row
+ * is visually tied to its curve on the 24h chart (external sensor is green
+ * there, matching '#22c55e'). */
+const SENSOR_COLORS = ['#a855f7', '#ec4899', '#14b8a6', '#eab308', '#f97316', '#38bdf8'];
+function sensorColor(i) { return SENSOR_COLORS[((i % SENSOR_COLORS.length) + SENSOR_COLORS.length) % SENSOR_COLORS.length]; }
 /* ---- Favicon: mini "Status pieca" (boiler-circle) in the browser tab ----
  * Drawn on an off-screen 64x64 canvas and swapped as the tab icon whenever
  * the boiler state changes. States mirror the dashboard tile exactly:
@@ -375,9 +381,15 @@ async function showSensorBuffer(sx) {
 function renderSensors(sensors) {
   const tb = $('sensorsTable').querySelector('tbody');
   tb.innerHTML = '';
+  /* Chart-line color per sensor: chart colors internal sensors by their index
+   * in the internal-only sequence of /api/state, so compute the same index
+   * here to badge every table row with its curve color (external is green). */
+  const intIdx = new Map(); let ii = 0;
+  sensors.forEach(sx => { if (!sx.external) intIdx.set(sx.id, ii++); });
   sensors.forEach(sx => {
     const tr = document.createElement('tr');
     tr.dataset.sid = sx.id;
+    const scol = sx.external ? '#22c55e' : sensorColor(intIdx.get(sx.id));
     const q = sx.quality;
     const radioTag = sx.radio_id ? ` <span style="color:var(--accent);font-size:11px" title="ID węzła LoRa">📡${sx.radio_id}</span>` : '';
     /* Long-term link loss (cumulative since controller boot): percent of
@@ -386,7 +398,7 @@ function renderSensors(sensors) {
     const ltHtml = (sx.radio_id && q !== 'DISABLED' && ltTot > 0)
       ? `<div style="font-size:10px;color:var(--muted)" title="Od startu sterownika: odebrano ${ltRx}, brak ${ltMiss}">Σ ${Math.round(100 * ltMiss / ltTot)}%</div>` : '';
     tr.innerHTML = `
-      <td>${sx.id}${radioTag}${sx.external ? ' ★' : ''}${sx.sim ? ' SIM' : ''}</td>
+      <td><span style="display:inline-block;width:10px;height:10px;background:${scol};border-radius:2px" title="Kolor linii czujnika na wykresie"></span> <span style="color:${scol};font-weight:600" title="Kolor jak na wykresie">${sx.id}</span>${radioTag}${sx.external ? ' <span style="color:#22c55e">★</span>' : ''}${sx.sim ? ' <span style="color:var(--warn)">SIM</span>' : ''}</td>
       <td><input class="name" value="${sx.name}"></td>
       <td><input type="checkbox" ${sx.active ? 'checked' : ''}></td>
       <td><input type="number" step="0.01" value="${sx.weight}"></td>
@@ -814,7 +826,6 @@ function render24(cv, rows, profile, sensors) {
     step(1, 'rgba(245,158,11,0.85)');   /* OFF threshold */
   }
 
-  const SENSOR_COLORS = ['#a855f7', '#ec4899', '#14b8a6', '#eab308', '#f97316', '#38bdf8'];
   const plot = (getV, color, width) => {
     ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
     let first = true;
@@ -838,12 +849,12 @@ function render24(cv, rows, profile, sensors) {
     internal.forEach((s, i) => {
       if (!visibleSensors.has(s.id)) return;          /* skip hidden sensor lines */
       if (!healthyCols.has(i)) return;                /* skip failed sensors */
-      const col = SENSOR_COLORS[i % SENSOR_COLORS.length];
+      const col = sensorColor(i);
       plot(d => d[5 + i], col, 1);
     });
     /* Legend — show all sensors; mark failed ones so user knows why they disappeared. */
     internal.forEach((s, i) => {
-      const col = SENSOR_COLORS[i % SENSOR_COLORS.length];
+      const col = sensorColor(i);
       const label = (s.name || ('S' + (i + 1))) + (healthyCols.has(i) ? '' : ' ❌');
       legend.push([label, col]);
     });
@@ -1065,9 +1076,8 @@ function populateSensorToggles(sensors) {
   const internal = (sensors || []).filter(s => !s.external);
   if (!visibleSensors.size) internal.forEach(s => visibleSensors.add(s.id));
   div.innerHTML = '';
-  const COLS = ['#a855f7','#ec4899','#14b8a6','#eab308','#f97316','#38bdf8'];
   internal.forEach((s, i) => {
-    const col = COLS[i % COLS.length];
+    const col = sensorColor(i);
     const lb = document.createElement('label');
     lb.style.cssText = 'font-size:12px;margin:0 10px 0 0;cursor:pointer;display:inline-flex;align-items:center;gap:4px;color:' + col;
     lb.innerHTML = '<input type="checkbox" ' + (visibleSensors.has(s.id) ? 'checked' : '') + '><span style="display:inline-block;width:10px;height:10px;background:' + col + ';border-radius:2px"></span>' + (s.name || ('S' + (i + 1)));
@@ -1081,6 +1091,31 @@ function populateSensorToggles(sensors) {
 
 /* ---- wiring ---- */
 $('btnBoost').onclick = () => post('/api/boost?on=' + (lastState && lastState.boost ? 0 : 1), '').then(() => refresh());
+
+/* ---- Clear 12-month daily history (daily.csv / energy chart) ----
+ * Two-step inline confirmation: (1) red warning, (2) typing the phrase
+ * WYCZYŚĆ. The server additionally demands {"confirm":"WYCZYŚĆ"} and a synced
+ * clock, so neither a stray POST nor a UI bug can wipe history silently. */
+$('btnHistClear').onclick = () => {
+  const c = $('histClearConfirm');
+  if (!c.classList.contains('hidden')) return;        /* already armed */
+  c.classList.remove('hidden');
+  c.innerHTML = `<span style="color:var(--err);font-size:12px;margin-right:6px">Czy na pewno? Usunie to dane wykresu zużycia energii z ostatnich ~365 dni (nieodwracalne).</span>
+    <input id="histCfmInp" class="inp" style="width:110px;padding:4px 8px" placeholder="wpisz WYCZYŚĆ" autocomplete="off">
+    <button class="btn btn-danger" id="histCfmGo" style="padding:4px 10px;font-size:12px;margin-left:4px" disabled>Wyczyść</button>
+    <button class="btn" id="histCfmNo" style="padding:4px 10px;font-size:12px;margin-left:4px;background:#333">Anuluj</button>`;
+  const inp = $('histCfmInp'), go = $('histCfmGo');
+  inp.oninput = () => { go.disabled = inp.value.trim() !== 'WYCZYŚĆ'; };
+  $('histCfmNo').onclick = () => { c.classList.add('hidden'); c.innerHTML = ''; };
+  go.onclick = async () => {
+    go.disabled = true; inp.disabled = true;
+    const r = await post('/api/history/clear', { confirm: 'WYCZYŚĆ' }, true);
+    c.classList.add('hidden'); c.innerHTML = '';
+    if (r && typeof r === 'object' && typeof r.cleared === 'number') await loadDaily();
+    else if (r === 'clock not synced - cannot derive window') alert('Zegar sterownika nie jest zsynchronizowany — nie można wyznaczyć okna 12 miesięcy.');
+    else alert('Czyszczenie nie powiodło się.');
+  };
+};
 /* Sensor add/remove is done via the pairing modal / per-row delete button. */
 /* Kill button: show inline confirmation, then toggle. */
 let killPending = false;

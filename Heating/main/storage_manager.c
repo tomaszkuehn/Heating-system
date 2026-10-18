@@ -527,6 +527,50 @@ static void prune_daily_csv(int keep_rows)
     ESP_LOGI(TAG, "daily.csv pruned: dropped %d rows, kept %d", drop, keep_rows);
 }
 
+/* Clear the last 365 days of daily history: rewrite daily.csv via .tmp keeping
+ * only rows whose YYYYMMDD key predates today-364. YYYYMMDD keys compare
+ * correctly as integers across year boundaries. Rows outside the window (older
+ * data beyond the 2-year cap window) are preserved. The RAM minute ring and
+ * today's live aggregate are untouched. Call under s_fs_mutex not required
+ * for the two file passes (same discipline as prune_daily_csv: the daily
+ * writer serializes its own sections with the mutex; this handler runs off the
+ * minute-writer path, so we take the mutex around file I/O here). */
+esp_err_t storage_clear_daily_history(int *cleared_days)
+{
+    if (cleared_days) *cleared_days = 0;
+    if (!s_lfs_ok) return ESP_FAIL;
+    if (!he_time_valid()) return ESP_ERR_INVALID_STATE;   /* no real "today" */
+
+    time_t now = time(NULL) - (time_t)365 * 86400;
+    int cutoff = day_key_from_ts((int32_t)now);
+
+    xSemaphoreTake(s_fs_mutex, portMAX_DELAY);
+    FILE *r = fopen(FS_DAILY, "r");
+    if (!r) { xSemaphoreGive(s_fs_mutex); return ESP_OK; }  /* nothing to clear */
+    FILE *w = fopen(FS_DAILY ".tmp", "w");
+    if (!w) { fclose(r); xSemaphoreGive(s_fs_mutex); return ESP_FAIL; }
+
+    int dropped = 0, kept = 0;
+    size_t wr = 0;
+    char line[64];
+    while (fgets(line, sizeof(line), r)) {
+        int key = atoi(line);
+        if (key > 0 && key >= cutoff) { dropped++; continue; }
+        size_t L = strlen(line);
+        if (L > 0) wr += fwrite(line, 1, L, w);
+        kept++;
+    }
+    fclose(r);
+    fclose(w);
+    if (wr > 0) account_fs_write(wr);
+    remove(FS_DAILY);
+    rename(FS_DAILY ".tmp", FS_DAILY);
+    xSemaphoreGive(s_fs_mutex);
+    ESP_LOGW(TAG, "daily history cleared: dropped %d day rows (<%d kept)", dropped, cutoff);
+    if (cleared_days) *cleared_days = dropped;
+    return ESP_OK;
+}
+
 /* Delete per-day sample files whose YYYYMMDD key predates keep_key.
  * Since minute samples are no longer written to files, this mainly cleans
  * up legacy data from older firmware versions. */

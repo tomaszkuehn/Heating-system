@@ -396,6 +396,21 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   pokazywany jako **0 minut** — wykres zawsze ma 365 segmentów i przewija się w
   lewo wraz z nadejściem nowego dnia. `heat_mins` to liczba minut w ciągu doby, w
   których przekaźnik grzania był aktywny (zliczana z minutowych próbek).
+- **Czyszczenie historii (12 miesięcy)** — przycisk **„🗑 Wyczyść historię
+  (12 mies.)"** w nagłówku wykresu zużycia energii usuwa z `daily.csv` wszystkie
+  wiersze dzienne z ostatnich 365 dni (~`POST /api/history/clear` z body
+  `{"confirm":"WYCZYŚĆ"}`). Usuwa dokładnie to, co wykres pokazuje — dane
+  **starsze niż rok zostają w pliku**, wykres 24 h (RAM) i dzisiejsza kolumna
+  (liczona na żywo z pierścienia minut) są **nietknięte**. Zabezpieczenia: (1)
+  podwójne potwierdzenie w UI — czerwone ostrzeżenie + wpisanie frazy `WYCZYŚĆ`;
+  (2) odrzucenie serwera przy pustym/błędnym `confirm` (HTTP 400 — przypadkowy
+  POST nic nie usuwa); (3) refusal przy niezsynchronizowanym zegarze (HTTP 409 —
+  bez SNTP nie da się wyznaczyć okna). Operacja logowana do dziennika zdarzeń.
+- **Kolory czujników** — czujniki wewnętrzne mają przypisaną **stałą paletę**
+  (6 kolorów per indeks): linia na wykresie 24 h, checkbox legendy **oraz
+  kropka + kolor ID w tabeli czujników** pochodzą z tej samej palety — każdy
+  wiersz tabeli jest więc wizualnie powiązany ze swoją krzywą wykresu. Czujnik
+  zewnętrzny jest zawsze zielony (`★`).
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
