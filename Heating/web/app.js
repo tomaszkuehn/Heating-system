@@ -246,6 +246,9 @@ function renderDashboard(s) {
 function render(s) {
   renderDashboard(s);
   renderSensors(s.sensors || []);
+  /* Rebuild the chart-line toggles so a renamed sensor propagates here too;
+   * visibleSensors (user's show/hide selection) is intentionally preserved. */
+  populateSensorToggles(s.sensors || []);
   if (!profileEdited) renderProfile(s.profile);
   renderModes(s);
 }
@@ -1105,7 +1108,7 @@ function populateSensorToggles(sensors) {
     const col = sensorColor(i);
     const lb = document.createElement('label');
     lb.style.cssText = 'font-size:12px;margin:0 10px 0 0;cursor:pointer;display:inline-flex;align-items:center;gap:4px;color:' + col;
-    lb.innerHTML = '<input type="checkbox" ' + (visibleSensors.has(s.id) ? 'checked' : '') + '><span style="display:inline-block;width:10px;height:10px;background:' + col + ';border-radius:2px"></span>' + (s.name || ('S' + (i + 1)));
+    lb.innerHTML = '<input type="checkbox" ' + (visibleSensors.has(s.id) ? 'checked' : '') + '><span style="display:inline-block;width:10px;height:10px;background:' + col + ';border-radius:2px"></span><span title="' + (s.name || '') + '">' + (s.name || ('S' + (i + 1))).slice(0, 12) + '</span>';
     lb.querySelector('input').onchange = function () {
       this.checked ? visibleSensors.add(s.id) : visibleSensors.delete(s.id);
       draw24h();
