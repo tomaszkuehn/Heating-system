@@ -61,6 +61,19 @@ typedef enum {
     ST_SIMULATION
 } control_state_t;
 
+/* ---- Control-temperature source (which sensors drive the hysteresis) ----
+ * AVG  : weighted system average of all qualifying sensors (pre-feature
+ *        behaviour, default).
+ * ANY  : the coldest among the user-selected sensors drives the decision, so a
+ *        drop below the profile's lower threshold on ANY one of them turns the
+ *        heating ON; it turns OFF only when ALL of them read >= off_temp.
+ *        Selection is the ctrl_mask in system_config_t (0 = all participate). */
+typedef enum {
+    CTRL_MODE_AVG = 0,
+    CTRL_MODE_ANY = 1
+} control_mode_t;
+#define HE_CTRL_MODE_MAX   CTRL_MODE_ANY    /* valid range 0..1 */
+
 /* ---- Fault classes (spec section 7) ---- */
 typedef enum {
     FAULT_NONE = 0,
@@ -168,6 +181,10 @@ typedef struct {
     bool            heating_active;       /* red "grzeje" marker               */
     bool            health_ok;            /* green health marker               */
     float           system_temp;          /* weighted effective average        */
+    float           control_temp;         /* temperature driving the hysteresis
+                                             (system_temp in AVG mode, min of the
+                                             selected sensors in ANY mode)     */
+    control_mode_t  control_mode;         /* AVG / ANY                          */
     float           external_temp;        /* outdoor temp, or NAN             */
     fault_class_t   active_fault;
     uint32_t        uptime_ms;

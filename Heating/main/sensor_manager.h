@@ -29,6 +29,19 @@ void sensor_manager_poll(void);
 /* Weighted system average over logically-correct, active sensors. */
 float sensor_manager_system_temp(void);
 
+/* Control-temperature for CTRL_MODE_ANY: the minimum last_effective across
+ * active, quality-OK (not window-suppressed) sensors whose id bit is set in
+ * the selection mask. mask == 0 -> all sensors qualify. NAN when no sensor
+ * qualifies (caller falls back to the weighted average). The external sensor
+ * never drives the control decision. */
+float sensor_manager_control_any_temp(void);
+
+/* Apply the persisted control/window policy (called by web_ui_api/main after
+ * loading or changing the config): mask semantics as above; ignore_sec is the
+ * minimum time a window-detected sensor stays excluded (0 = immediate). */
+void  sensor_manager_set_ctrl_mask(uint8_t mask);
+void  sensor_manager_set_window_ignore(int ignore_sec);
+
 /* Outdoor reading (NAN if absent/invalid). */
 float sensor_manager_external_temp(void);
 

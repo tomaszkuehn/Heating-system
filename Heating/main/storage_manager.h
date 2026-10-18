@@ -31,6 +31,7 @@ extern "C" {
  * fields; repair_config() then defaults radio_id = id for pre-existing
  * sensors (preserves the old 1:1 behaviour). */
 #define HE_CFG_VER_RADIO_ID   2
+#define HE_CFG_VER_CTRL       3
 typedef struct {
     sensor_t            sensors[HE_MAX_SENSORS + 1]; /* idx 0..HE_MAX_SENSORS-1 = internal; idx HE_MAX_SENSORS = external */
     int                 sensor_count;                /* internal count 1..6 */
@@ -90,6 +91,20 @@ typedef struct {
      * a latched one — for installations where the rise model doesn't apply
      * (e.g. very slow floor heating). Set via /api/limits. */
     bool                ignore_heat_rise;
+    /* ---- cfg v3: control-sensor selection & open-window ignore.
+     * Tail-appended for NVS upgrade safety: an older short-read blob zero-fills
+     * these, and repair_config() defaults them + bumps cfg_ver. Do NOT reorder
+     * above.
+     * ctrl_mask: bit (sensor id - 1) participates in the ANY-mode decision;
+     *            mask == 0 means "all active internal sensors participate"
+     *            (pre-feature behaviour). Unused for the AVG mode.
+     * control_mode: control_mode_t — 0 = CTRL_MODE_AVG, 1 = CTRL_MODE_ANY.
+     * window_ignore_sec: when open-window detection trips on a sensor, that
+     *            sensor is excluded from the control temperature for AT LEAST
+     *            this many seconds (0 = immediate, hysteresis-only recovery). */
+    uint8_t             ctrl_mask;                 /* selection bitmask, 0 = all */
+    uint8_t             control_mode;              /* control_mode_t             */
+    int                 window_ignore_sec;         /* default 300, 0..3600       */
 } system_config_t;
 
 /* One minute sample record (all active sensors + system + external). */

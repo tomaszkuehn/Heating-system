@@ -22,6 +22,12 @@ temperatury na LoRa 433 MHz.
   kroczącą i temperaturę systemową ważoną, po czym steruje piecem zgodnie
   z profilem dobowym (histereza + zabezpieczenia: karencja, limity czasu
   pracy, tryb awaryjny). Panel webowy: `http://<ip>/`.
+- **Sterowanie wybranymi czujnikami:** obok trybu średniej systemowej można
+  przełączyć sterowanie na **dowolny z wybranych czujników** (grzanie włącza
+  się, gdy najzimniejszy z nich spadnie poniżej dolnego progu profilu);
+  wykrycie gwałtownego spadku (otwarte okno) loguje zdarzenie i wyklucza
+  taki czujnik ze sterowania na konfigurowalny czas
+  (szczegóły: [`Heating/README.md`](Heating/README.md), „Sterowanie wybranymi czujnikami").
 - Parowanie nowego węzła odbywa się z panelu („＋ Dodaj czujnik LoRa"):
   kontroler nadaje binarną ramkę `02 E3 PR<n>T9#` i oczekuje potwierdzenia
   ogłoszeniem `T<n>`; slot czujnika powstaje dopiero po potwierdzeniu.

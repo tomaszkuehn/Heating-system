@@ -148,6 +148,14 @@ function renderDashboard(s) {
   hlth.textContent = s.health ? '● Zdrowy' : '● Problem';
   stt.textContent = s.state;
   $('sysTemp').textContent = fmtT(s.system);
+  /* Temperature that drives the hysteresis + which source produced it. */
+  const ct = $('ctrlTemp');
+  if (ct) {
+    ct.textContent = fmtT(s.ctemp);
+    const t = document.getElementById('sysTempTile');
+    if (t) t.querySelector('.k').textContent = (s.control_mode === 1)
+      ? 'Temp. systemowa (avg.)' : 'Temp. systemowa';
+  }
   $('extTemp').textContent = fmtT(s.external);
   $('sensOk').textContent = (s.sensors || []).filter(x => x.quality === 'OK' || x.quality === 'SIMULATED').length + '/' + (s.sensors||[]).length;
   $('uptime').textContent = fmtUp(s.uptime);
@@ -382,6 +390,7 @@ function renderSensors(sensors) {
       <td><input class="name" value="${sx.name}"></td>
       <td><input type="checkbox" ${sx.active ? 'checked' : ''}></td>
       <td><input type="number" step="0.01" value="${sx.weight}"></td>
+      <td><input type="checkbox" ${sx.ctrl ? 'checked' : ''} title="Bierze udział w sterowaniu (tryb dowolny)"></td>
       <td><input type="number" step="0.1" value="${sx.calib}"></td>
       <td><input type="number" step="0.1" value="${sx.comfort}"></td>
       <td class="hcell">${healthDot(q, sx)}${ltHtml}</td>
@@ -391,8 +400,8 @@ function renderSensors(sensors) {
     const inputs = tr.querySelectorAll('input');
     tr.querySelector('button[data-id]').onclick = () => {
       const body = { name: inputs[0].value, active: inputs[1].checked,
-        weight: parseFloat(inputs[2].value), calib: parseFloat(inputs[3].value),
-        comfort: parseFloat(inputs[4].value) };
+        weight: parseFloat(inputs[2].value), ctrl: inputs[3].checked,
+        calib: parseFloat(inputs[4].value), comfort: parseFloat(inputs[5].value) };
       post('/api/sensor?id=' + sx.id, body, true).then(() => refresh());
     };
     const bb = tr.querySelector('button[data-buf]');
@@ -466,6 +475,9 @@ function renderModes(s) {
     if ($('limMinOff')) $('limMinOff').value = s.min_off_sec || 90;
     if ($('limAntiosc')) $('limAntiosc').value = s.anti_osc_lock_sec || 120;
     if ($('limIgnoreRise')) $('limIgnoreRise').checked = !!s.ignore_heat_rise;
+    /* Control-sensor mode + open-window ignore time (cfg v3). */
+    if ($('limCtrlMode')) $('limCtrlMode').value = String(s.control_mode || 0);
+    if ($('limWinIg'))    $('limWinIg').value    = (s.window_ignore_sec || 300);
     /* per-event-type e-mail subscription (safe booleans). */
     if ($('nEvFaults'))  $('nEvFaults').checked  = s.notify_ev.faults;
     if ($('nEvRestart')) $('nEvRestart').checked = s.notify_ev.restart;
@@ -1199,7 +1211,9 @@ $('btnLimits').onclick = () => post('/api/limits', {
   min_on_sec: +$('limMinOn').value,
   min_off_sec: +$('limMinOff').value,
   anti_osc_lock_sec: +$('limAntiosc').value,
-  ignore_heat_rise: $('limIgnoreRise').checked
+  ignore_heat_rise: $('limIgnoreRise').checked,
+  control_mode: +$('limCtrlMode').value,
+  window_ignore_sec: +$('limWinIg').value
 }, true).then(() => refresh());
 
 /* Collapsible config sections: clicking the header toggles its card. */

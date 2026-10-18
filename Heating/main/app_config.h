@@ -99,6 +99,13 @@ extern "C" {
 #define HE_MIN_ON_OFF_FLOOR     30           /* hard floor for min_on/min_off (anti-chatter) */
 #define HE_ANTIOSC_FLOOR        30           /* hard floor for anti-osc lock */
 
+/* ---- Open-window ignore time (cfg v3, /api/limits) ----
+ * After a sudden-drop (open-window) detection, the offending sensor stays
+ * excluded from the control temperature at least this long before the
+ * recovery hysteresis (HE_WINDOW_RECOVERY_HYST) may re-enable it. */
+#define HE_DEFAULT_WINDOW_IGNORE_SEC  300    /* 5 minutes                    */
+#define HE_WINDOW_IGNORE_MAX_SEC      3600   /* range 0..3600 (0 = no hold)  */
+
 /* ---- Network defaults (spec 12) ---- */
 #define HE_DEFAULT_AP_SSID      "ESP"
 #define HE_DEFAULT_AP_PASS      "12345678"    /* WPA2 requires >= 8 chars */

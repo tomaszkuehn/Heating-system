@@ -52,7 +52,8 @@
       </div>
     </div>
     <div class="grid">
-      <div class="tile"><div class="k">Temp. systemowa</div><div id="sysTemp" class="v">--</div></div>
+      <div class="tile" id="sysTempTile"><div class="k">Temp. systemowa</div><div id="sysTemp" class="v">--</div></div>
+      <div class="tile"><div class="k">Temp. sterująca</div><div id="ctrlTemp" class="v" title="Temperatura, która decyduje o grzaniu (średnia lub min. z wybranych czujników)">--</div></div>
       <div class="tile"><div class="k">Temp. zewn.</div><div id="extTemp" class="v">--</div></div>
       <div class="tile"><div class="k">Czujniki OK</div><div id="sensOk" class="v">--</div></div>
       <div class="tile"><div class="k">Uptime</div><div id="uptime" class="v">--</div></div>
@@ -98,7 +99,7 @@
     </div>
     <div class="tbl-scroll">
     <table class="tbl" id="sensorsTable">
-      <thead><tr><th>ID</th><th>Nazwa</th><th>Aktywny</th><th>Waga</th><th>Offset kal.</th><th>Offset komf.</th><th>Health</th><th>Jakość</th><th>Temp eff.</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>Nazwa</th><th>Aktywny</th><th>Waga</th><th title="Bierze udział w decyzji o ogrzewaniu w trybie „dowolny wybrany”">Steruje</th><th>Offset kal.</th><th>Offset komf.</th><th>Health</th><th>Jakość</th><th>Temp eff.</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     </div>
@@ -187,6 +188,16 @@
       <label>Min. czas grzania (s)<input type="number" id="limMinOn" class="inp" min="30" max="3600"></label>
       <label>Min. czas przerwy (s)<input type="number" id="limMinOff" class="inp" min="30" max="3600"></label>
       <label>Blokada antyosc. (s)<input type="number" id="limAntiosc" class="inp" min="30" max="600"></label>
+    </div>
+    <h3 style="margin:10px 0 4px">Sterowanie czujnikami / otwarte okno</h3>
+    <div class="grid3">
+      <label>Tryb sterowania
+        <select id="limCtrlMode" class="inp">
+          <option value="0">Średnia (temp. systemowa)</option>
+          <option value="1">Dowolny wybrany (min.)</option>
+        </select>
+      </label>
+      <label>Czujnik ignorowany po spadku (s)<input type="number" id="limWinIg" class="inp" min="0" max="3600"></label>
     </div>
     <label style="margin-top:8px"><input type="checkbox" id="limIgnoreRise"> <b style="color:#f59e0b">ignoruj brak/słaby wzrost temperatury</b> (nie zgłaszaj NO/LOW_HEAT_RISE — grzanie nigdy nie staje z tego powodu)</label>
     <button id="btnLimits" class="btn">Zapisz limity</button>

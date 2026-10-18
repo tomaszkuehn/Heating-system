@@ -493,6 +493,7 @@ static esp_err_t h_state(httpd_req_t *req)
         "\"fault_grace_sec\":%d,\"max_on_sec\":%d,\"max_on_break_sec\":%d,"
         "\"min_on_sec\":%d,\"min_off_sec\":%d,\"anti_osc_lock_sec\":%d,"
         "\"ignore_heat_rise\":%s,"
+        "\"control_mode\":%u,\"window_ignore_sec\":%d,\"ctemp\":%.2f,"
         "\"time_synced\":%s,\"time_now\":%lld,\"device_ip\":\"%s\","
         "\"lora_garbage\":%u,\"lora_rejected\":%u,"
         "\"sensors\":[",
@@ -512,6 +513,9 @@ static esp_err_t h_state(httpd_req_t *req)
         s_cfg->fault_grace_sec, s_cfg->max_on_sec, s_cfg->max_on_break_sec,
         s_cfg->min_on_sec, s_cfg->min_off_sec, s_cfg->anti_osc_lock_sec,
         s_cfg->ignore_heat_rise ? "true" : "false",
+        (unsigned)snap.control_mode,
+        s_cfg->window_ignore_sec,
+        he_isnan(snap.control_temp) ? -99.0f : snap.control_temp,
         he_time_valid() ? "true" : "false",
         (long long)now_unix,
         network_device_ip(),
@@ -524,13 +528,17 @@ static esp_err_t h_state(httpd_req_t *req)
         json_escape(s->name, ename, sizeof(ename));
         uint32_t lt_rx = 0, lt_miss = 0;
         sensor_manager_link_stats(s->id, &lt_rx, &lt_miss);
+        /* ctrl = participates in the ANY-mode decision (mask 0 = all active). */
+        bool sctl = !s_cfg->ctrl_mask ||
+                    (s_cfg->ctrl_mask & (uint8_t)(1u << ((s->id - 1) & 7u)));
         p += snprintf(b + p, sizeof(b) - p,
             "%s{\"id\":%d,\"radio_id\":%d,\"name\":\"%s\",\"active\":%s,\"weight\":%.3f,"
+            "\"ctrl\":%s,"
             "\"calib\":%.2f,\"comfort\":%.2f,\"quality\":\"%s\",\"eff\":%.2f,"
             "\"raw\":%.2f,\"sim\":%s,\"window\":%s,\"last_seen\":%d,"
             "\"loss\":%.0f,\"rx\":%s,\"lt_rx\":%u,\"lt_miss\":%u}",
             i ? "," : "", s->id, s->radio_id, ename, s->active ? "true" : "false",
-            s->weight, s->calib_offset, s->comfort_offset, sensor_quality_name(s->quality),
+            s->weight, sctl ? "true" : "false", s->calib_offset, s->comfort_offset, sensor_quality_name(s->quality),
             he_isnan(s->last_effective) ? -99.0f : s->last_effective,
             he_isnan(s->last_raw) ? -99.0f : s->last_raw,
             s->simulated ? "true" : "false", s->window_open ? "true" : "false",
@@ -619,6 +627,19 @@ static esp_err_t h_sensor_post(httpd_req_t *req)
     if (json_float(body, "weight", &f)) target->weight = he_clampf(f, 0.0f, 1.0f);
     if (json_float(body, "calib", &f)) target->calib_offset = he_clampf(f, -20.0f, 20.0f);
     if (json_float(body, "comfort", &f)) target->comfort_offset = he_clampf(f, -20.0f, 20.0f);
+    if (json_bool(body, "ctrl", &b) && target->id >= 1 && target->id <= HE_MAX_SENSORS) {
+        /* First click materialises the mask from the "0 = all active" state so
+         * an explicit unselect only removes this one sensor. */
+        uint8_t bit = (uint8_t)(1u << ((target->id - 1) & 7u));
+        if (!s_cfg->ctrl_mask)
+            for (int i = 0; i < s_cfg->sensor_count; i++)
+                if (s_cfg->sensors[i].active)
+                    s_cfg->ctrl_mask |= (uint8_t)(1u << ((s_cfg->sensors[i].id - 1) & 7u));
+        if (b) s_cfg->ctrl_mask |= bit;
+        else   s_cfg->ctrl_mask &= (uint8_t)~bit;
+    }
+    sensor_manager_set_ctrl_mask(s_cfg->ctrl_mask);
+    sensor_manager_set_window_ignore(s_cfg->window_ignore_sec);
     storage_save_config(s_cfg);
     CFG_RET(send_text(req, "ok", 200));
 }
@@ -681,6 +702,12 @@ static esp_err_t h_sensors_count(httpd_req_t *req)
     /* Re-normalise weights so they sum to 1 across active sensors. */
     float wsum = 0; for (int i = 0; i < n; i++) wsum += s_cfg->sensors[i].weight;
     if (wsum > 0) for (int i = 0; i < n; i++) s_cfg->sensors[i].weight /= wsum;
+    /* A newly added sensor must count in the ANY-mode decision when an explicit
+     * selection mask exists (mask 0 = all participate, nothing to do). */
+    for (int i = prev; i < n; i++)
+        if (s_cfg->ctrl_mask)
+            s_cfg->ctrl_mask |= (uint8_t)(1u << (i & 7u));
+    sensor_manager_set_ctrl_mask(s_cfg->ctrl_mask);
     sensor_manager_bind(s_cfg->sensors, s_cfg->sensor_count,
                         s_cfg->has_external ? &s_cfg->sensors[HE_MAX_SENSORS] : NULL);
     storage_save_config(s_cfg);
@@ -996,6 +1023,13 @@ static esp_err_t h_limits(httpd_req_t *req)
     bool ign;
     if (json_bool(body, "ignore_heat_rise", &ign))
         s_cfg->ignore_heat_rise = ign;
+    /* cfg v3: control-sensor selection mode + open-window ignore time. */
+    if (json_int(body, "control_mode", &v) && v >= 0 && v <= HE_CTRL_MODE_MAX)
+        s_cfg->control_mode = (uint8_t)v;
+    if (json_int(body, "window_ignore_sec", &v) && v >= 0 && v <= HE_WINDOW_IGNORE_MAX_SEC)
+        s_cfg->window_ignore_sec = v;
+    sensor_manager_set_ctrl_mask(s_cfg->ctrl_mask);
+    sensor_manager_set_window_ignore(s_cfg->window_ignore_sec);
     storage_save_config(s_cfg);
     CFG_RET(send_text(req, "ok", 200));
 }

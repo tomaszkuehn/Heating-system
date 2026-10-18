@@ -196,6 +196,17 @@ void control_tick(int dt_ms)
 
     float sys_temp = sensor_manager_system_temp();
     float ext_temp = sensor_manager_external_temp();
+    /* Control temperature per the configured source: the weighted system
+     * average (CTRL_MODE_AVG), or the coldest of the user-selected sensors
+     * (CTRL_MODE_ANY) — any one of them dropping below the profile's lower
+     * threshold then turns the heating ON. Falls back to the system average
+     * when no selected sensor qualifies (none set / all suppressed / no data). */
+    control_mode_t cmode = (s_cfg->control_mode == CTRL_MODE_ANY) ? CTRL_MODE_ANY : CTRL_MODE_AVG;
+    float tctrl = sys_temp;
+    if (cmode == CTRL_MODE_ANY) {
+        float tsel = sensor_manager_control_any_temp();
+        if (!he_isnan(tsel)) tctrl = tsel;
+    }
     int hour = control_current_hour();
     int healthy = sensor_manager_healthy_count();
     int total = s_cfg->sensor_count;
@@ -249,7 +260,7 @@ void control_tick(int dt_ms)
     }
     /* Precedence 5: normal hysteresis. */
     else {
-        bool decision = hysteresis_decision(sys_temp, hour, s_relay);
+        bool decision = hysteresis_decision(tctrl, hour, s_relay);
         target_state = decision ? ST_HEATING : ST_IDLE;
         target_relay = decision;
     }
@@ -360,6 +371,14 @@ void control_get_snapshot(system_snapshot_t *out)
     out->state = s_state;
     out->heating_active = s_relay;
     out->system_temp = sensor_manager_system_temp();
+    /* The temperature that actually drives the hysteresis (see control_tick):
+     * system average in AVG mode, coldest selected sensor in ANY mode. */
+    out->control_temp = out->system_temp;
+    out->control_mode = (s_cfg && s_cfg->control_mode == CTRL_MODE_ANY) ? CTRL_MODE_ANY : CTRL_MODE_AVG;
+    if (out->control_mode == CTRL_MODE_ANY) {
+        float tsel = sensor_manager_control_any_temp();
+        if (!he_isnan(tsel)) out->control_temp = tsel;
+    }
     out->external_temp = sensor_manager_external_temp();
     out->active_fault = fault_manager_current();
     out->health_ok = (fault_manager_current() == FAULT_NONE || fault_manager_current() == FAULT_NETWORK)

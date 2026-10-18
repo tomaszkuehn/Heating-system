@@ -496,6 +496,29 @@ ewentualnie zatrzaśnięty `NO/LOW_HEAT_RISE` (sam nie zniknie, bo zatrzask trzy
 przekaźnik OFF). Przeznaczony dla instalacji, gdzie model wzrostu nie ma sensu
 (np. bardzo wolne ogrzewanie podłogowe) — grzanie nigdy nie staje z tego powodu.
 
+### Sterowanie wybranymi czujnikami (cfg v3)
+
+Karta limitów zawiera sekcję **„Sterowanie czujnikami"** (`control_mode` +
+`window_ignore_sec` w `POST /api/limits`); wybór czujników to kolumna
+**„Steruje"** w tabeli czujników (`ctrl` w `POST /api/sensor?id=`).
+
+| Parametr | Pole JSON | Domyślnie | Zakres | Opis |
+|---|---|---|---|---|
+| Tryb sterowania | `control_mode` | 0 (średnia) | 0–1 | `0` = temperaturą sterującą jest ważona **średnia systemowa**; `1` = steruje **najzimniejszy z wybranych** czujników — spadek któregokolwiek poniżej dolnego progu profilu włącza grzanie, a wyłączenie następuje dopiero gdy **wszystkie** wybrane ≥ górnego progu |
+| Czas ignorowania po spadku | `window_ignore_sec` | 300 s | 0–3600 s | Po wykryciu gwałtownego spadku (okno) czujnik jest wykluczony ze sterowania **co najmniej** ten czas — nawet gdy temperatura już wraca; po wygaśnięciu decyduje histereza powrotu (0,4 °C) |
+
+- Wybór czujników (`ctrl_mask` w NVS) działa jak maska bitowa per czujnik
+  wewnętrzny; `mask = 0` = wszyscy aktywni uczestniczą (zachowanie zgodne
+  wstecz). Pierwsze kliknięcie „Steruje" materializuje maskę dla aktywnych
+  czujników, żeby odznaczenie jednego nie wyłączyło reszty.
+- Czujnik zewnętrzny **nigdy** nie steruje grzaniem.
+- W trybie `any` decyzję podejmuje temperatura z `sensor_manager_control_any_temp()`
+  (minimum z wybranych); `avg` bez zmian używa `sensor_manager_system_temp()`.
+  Przy braku kwalifikowanych czujników (brak danych / wszystkie tłumione) sterownik
+  wraca do średniej systemowej.
+- Dashboard pokazuje **„Temp. sterująca"** — temperaturę, której aktualnie używa
+  histereza (w `avg` = średnia, w `any` = minimum z wybranych).
+
 ## Zdarzenia obsługiwane przez system
 
 Dla każdego zdarzenia opisano: **warunek wystąpienia**, **sposób zakończenia**
@@ -584,14 +607,21 @@ uwzględnia wyłącznie czujniki o statusie `OK` lub `SIMULATED`.
   spadek o >1,0 °C większy niż średni spadek pozostałych aktywnych czujników
   (`window_detect`). Porównanie z innymi czujnikami odróżnia otwarte okno od
   naturalnego wychłodzenia całego budynku (unika fałszywych alarmów).
-- **Zakończenie:** automatycznie, gdy temperatura odbuduje się do wnętrza
-  histerezy bazy (`drop < HE_WINDOW_RECOVERY_HYST = 0,4 °C`), lub **ręcznie**
+- **Zalogowanie:** oba przejścia trafiają do dziennika zdarzeń UI („Logi /
+  alarmy"): otwarcie jako ostrzeżenie („S<N> (<nazwa>): gwałtowny spadek
+  (okno?) — ignoruję <X> s"), zamknięcie jako informacja („okno zamknięte").
+- **Zakończenie:** automatyczne, gdy **minie czas ignorowania**
+  (`window_ignore_sec`, domyślnie 300 s — wykryty czujnik zostaje wykluczony
+  ze sterowania jeszcze przez ten czas, nawet gdy temperatura wraca) **i**
+  temperatura odbuduje się do wnętrza histerezy bazy
+  (`drop < HE_WINDOW_RECOVERY_HYST = 0,4 °C`), lub **ręcznie**
   przyciskiem „Przywróć" w tabeli czujników (`/api/sensor/restore`,
   `sensor_manager_restore`).
 - **Akcje i rezultat:** czujnik jest **czasowo tłumiony** — wypada ze średniej
-  systemowej, więc chwilowe wychłodzenie przy oknie **nie wymusza grzania**
-  całego obiektu. Baza czujnika nie jest w tym czasie adaptowana. Po zamknięciu
-  okna czujnik wraca do `OK`, a baza jest ustawiana na bieżącą temperaturę.
+  systemowej (i z decyzji trybu „dowolny wybrany"), więc chwilowe wychłodzenie
+  przy oknie **nie wymusza grzania** całego obiektu. Baza czujnika nie jest w
+  tym czasie adaptowana. Po zamknięciu okna czujnik wraca do `OK`, a baza jest
+  ustawiana na bieżącą temperaturę.
 
 #### `QUAL_DISABLED` — czujnik wyłączony przez użytkownika
 - **Warunek:** odznaczenie „Aktywny" w tabeli czujników (`active = false`,

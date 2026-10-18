@@ -137,6 +137,20 @@ static void repair_config(system_config_t *c)
      * which means "use host:port or default 25", so the only repair needed is to
      * treat out-of-range values as the default. */
     if (c->smtp_port < 1 || c->smtp_port > 65535) c->smtp_port = HE_DEFAULT_SMTP_PORT;
+    /* cfg v3: control-sensor selection & window-ignore time. An upgraded
+     * short-read blob zero-fills the new tail fields: mask 0 -> all active
+     * internal sensors participate, mode 0 = weighted average (both are the
+     * pre-feature behaviour); the ignore time gets the default. Clamp the
+     * loaded values as well (same garbage-blob hazard as the limits above). */
+    if (c->cfg_ver < HE_CFG_VER_CTRL) {
+        c->ctrl_mask         = 0;                        /* 0 = all participate */
+        c->control_mode      = CTRL_MODE_AVG;
+        c->window_ignore_sec = HE_DEFAULT_WINDOW_IGNORE_SEC;
+        c->cfg_ver           = HE_CFG_VER_CTRL;
+    }
+    if (c->control_mode > HE_CTRL_MODE_MAX) c->control_mode = CTRL_MODE_AVG;
+    if (c->window_ignore_sec < 0 || c->window_ignore_sec > HE_WINDOW_IGNORE_MAX_SEC)
+        c->window_ignore_sec = HE_DEFAULT_WINDOW_IGNORE_SEC;
     /* Panel auth: an upgraded/short-read blob leaves these empty -> defaults.
      * A too-short password (post-upgrade zero-fill artefact) is also repaired. */
     if (c->panel_user[0] == '\0')
@@ -265,6 +279,9 @@ void app_main(void)
     sensor_manager_init();
     sensor_manager_bind(g_cfg.sensors, g_cfg.sensor_count,
                         g_cfg.has_external ? &g_cfg.sensors[HE_MAX_SENSORS] : NULL);
+    /* Push the persisted control/window policy (cfg v3) into sensor_manager. */
+    sensor_manager_set_ctrl_mask(g_cfg.ctrl_mask);
+    sensor_manager_set_window_ignore(g_cfg.window_ignore_sec);
 
     /* LoRa receiver: temperature frames from the remote DS18x20 node. Must
      * start after sensor_manager is bound so updates route to live sensors. */

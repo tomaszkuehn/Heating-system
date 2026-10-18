@@ -1,5 +1,6 @@
 #include "sensor_manager.h"
 #include "app_config.h"
+#include "storage_manager.h"
 
 #include <string.h>
 #include <math.h>
@@ -33,6 +34,16 @@ static float  s_prev_eff[HE_MAX_SENSORS];
 static int64_t s_last_change_us[HE_MAX_SENSORS];
 static int64_t s_drift_since_us[HE_MAX_SENSORS];
 static uint8_t s_uart_buf[HE_SENSOR_BUF_SIZE];
+
+/* Control/window policy (cfg v3, pushed from web_ui_api/main under the config
+ * lock). s_ctrl_mask: bit (id-1) participates in CTRL_MODE_ANY; 0 = all active.
+ * s_window_ignore_sec: minimum exclusion time after a sudden-drop detection
+ * (0 = immediate recovery per the detection hysteresis). */
+static uint8_t s_ctrl_mask = 0;
+static int     s_window_ignore_sec = HE_DEFAULT_WINDOW_IGNORE_SEC;
+/* Deadline (esp_timer monotone us) until which a window-detected sensor stays
+ * excluded regardless of its readings — indexed by sensor table position. */
+static int64_t s_window_hold_us[HE_MAX_SENSORS];
 
 static uint32_t mono_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -267,28 +278,46 @@ void sensor_manager_note_rx(sensor_t *s)
     }
 }
 
-/* Open-window detection (spec 6.1): rate of drop + comparison with others. */
+/* True when the reading is back within the recovery hysteresis of the
+ * window-detection baseline (the drop that opened the window has healed). */
+static bool drop_ok(const sensor_t *s, int idx)
+{
+    return (s_baseline[idx] - s->last_effective) < HE_WINDOW_RECOVERY_HYST;
+}
+
+/* Open-window detection (spec 6.1): rate of drop + comparison with others.
+ * On detection the sensor stays excluded from the control temperature for at
+ * least window_ignore_sec (configurable hold), and until its reading recovers
+ * within HE_WINDOW_RECOVERY_HYST of the baseline. Both transitions go to the
+ * shared event log so the panel history shows the incident. */
 static void window_detect(sensor_t *s, int idx)
 {
     if (idx < 0 || idx >= HE_MAX_SENSORS) return;
-    if (s->quality != QUAL_OK && s->quality != QUAL_SIMULATED) return;
 
+    if (s->window_open) {
+        /* Stay suppressed at least for the user-configured hold time, then
+         * re-enable when the temperature recovers within the hysteresis. */
+        bool hold_elapsed = (s_window_ignore_sec <= 0) ||
+                            (esp_timer_get_time() >= s_window_hold_us[idx]);
+        if (!hold_elapsed) return;
+        if (drop_ok(s, idx)) {
+            s->window_open = false;
+            s->quality = s->simulated ? QUAL_SIMULATED : QUAL_OK;
+            s_baseline[idx] = s->last_effective;
+            ESP_LOGI(TAG, "sensor %d: window closed, restored", s->id);
+            char buf[96];
+            snprintf(buf, sizeof(buf), "S%d (%s): okno zamknięte", s->id, s->name);
+            storage_log_event(FAULT_NONE, 0, buf);
+        }
+        return;
+    }
+
+    if (s->quality != QUAL_OK && s->quality != QUAL_SIMULATED) return;
     if (isnan(s_baseline[idx])) {
         s_baseline[idx] = s->last_effective;
         return;
     }
     float drop = s_baseline[idx] - s->last_effective;
-
-    if (s->window_open) {
-        /* Re-enable when temperature recovers within hysteresis of baseline. */
-        if (drop < HE_WINDOW_RECOVERY_HYST) {
-            s->window_open = false;
-            s->quality = s->simulated ? QUAL_SIMULATED : QUAL_OK;
-            s_baseline[idx] = s->last_effective;
-            ESP_LOGI(TAG, "sensor %d: window closed, restored", s->id);
-        }
-        return;
-    }
 
     /* Compare this sensor's drop with the average drop of the other active,
      * non-suppressed sensors: only a localised, fast drop indicates a window,
@@ -308,7 +337,13 @@ static void window_detect(sensor_t *s, int idx)
     if (drop > 1.5f && (drop - other_drop) > 1.0f) {
         s->window_open = true;
         s->quality = QUAL_WINDOW_OPEN;
+        s_window_hold_us[idx] = esp_timer_get_time() +
+                                (int64_t)s_window_ignore_sec * 1000000LL;
         ESP_LOGW(TAG, "sensor %d (%s): open window detected", s->id, s->name);
+        char buf[96];
+        snprintf(buf, sizeof(buf), "S%d (%s): gwałtowny spadek (okno?) — ignoruję %d s",
+                 s->id, s->name, s_window_ignore_sec);
+        storage_log_event(FAULT_NONE, 1, buf);
     } else {
         /* slowly adapt baseline toward current to track gradual changes */
         s_baseline[idx] = s_baseline[idx] * 0.95f + s->last_effective * 0.05f;
@@ -484,10 +519,15 @@ void sensor_manager_poll(void)
         }
     }
 
-    /* Open-window and stale/drift checks (skip external). */
+    /* Open-window and stale/drift checks (skip external). window_detect is
+     * also invoked while quality == QUAL_WINDOW_OPEN so the recovery path
+     * (hold timer + hysteresis) can re-enable the sensor; for wired probes
+     * parse_frame deliberately keeps the WINDOW_OPEN quality while suppressed,
+     * and the same guard on the LoRa path keeps the flag stable there. */
     for (int i = 0; i < s_count; i++) {
         sensor_t *s = &s_sensors[i];
-        if (s->quality == QUAL_OK || s->quality == QUAL_SIMULATED) {
+        if (s->quality == QUAL_OK || s->quality == QUAL_SIMULATED ||
+            s->quality == QUAL_WINDOW_OPEN) {
             window_detect(s, i);
             if (s->quality == QUAL_OK || s->quality == QUAL_SIMULATED)
                 stale_detect(s, i);
@@ -516,6 +556,35 @@ float sensor_manager_system_temp(void)
     }
     if (wsum <= 0) return he_nan();
     return vsum / wsum;
+}
+
+/* Control-temperature for CTRL_MODE_ANY: coldest among the user-selected
+ * sensors. A sensor qualifies when it is active, quality-OK (or simulated),
+ * has a reading, and its id bit is set in s_ctrl_mask (0 = all internal
+ * sensors qualify). Window-suppressed and external sensors never count.
+ * NAN when nothing qualifies — the control engine falls back to AVG. */
+float sensor_manager_control_any_temp(void)
+{
+    float mn = he_nan();
+    for (int i = 0; i < s_count; i++) {
+        sensor_t *s = &s_sensors[i];
+        if (!s->active) continue;
+        if (s->quality != QUAL_OK && s->quality != QUAL_SIMULATED) continue;
+        if (he_isnan(s->last_effective)) continue;
+        if (s_ctrl_mask &&
+            !(s_ctrl_mask & (uint8_t)(1u << ((s->id - 1) & 7u)))) continue;
+        if (he_isnan(mn) || s->last_effective < mn) mn = s->last_effective;
+    }
+    return mn;
+}
+
+void sensor_manager_set_ctrl_mask(uint8_t mask) { s_ctrl_mask = mask; }
+
+void sensor_manager_set_window_ignore(int ignore_sec)
+{
+    if (ignore_sec < 0) ignore_sec = 0;
+    if (ignore_sec > HE_WINDOW_IGNORE_MAX_SEC) ignore_sec = HE_WINDOW_IGNORE_MAX_SEC;
+    s_window_ignore_sec = ignore_sec;
 }
 
 float sensor_manager_external_temp(void)
@@ -576,8 +645,8 @@ void sensor_manager_lora_update(int id, float temperature)
     sensor_manager_note_rx(target);
       if (temperature < HE_TEMP_MIN_LOGICAL || temperature >= HE_TEMP_MAX_LOGICAL)
           target->quality = QUAL_OUT_OF_RANGE;
-      else
-          target->quality = QUAL_OK;
+      else if (!target->window_open)
+          target->quality = QUAL_OK;   /* keep QUAL_WINDOW_OPEN while suppressed */
 }
 
 void sensor_manager_lora_err(int radio_id)
