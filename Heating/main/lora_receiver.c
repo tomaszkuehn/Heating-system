@@ -307,6 +307,17 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
         ESP_LOGI(TAG, "pairing request (bin): T0 = %.2f C", temp);
         return;
     }
+    /* Pairing bookkeeping runs BEFORE the registered-sensor gate: a node
+     * just assigned id N by PR has no bound sensor yet — exactly at that
+     * moment its fresh T<N> announcement must confirm the pairing job
+     * (verified by the pair_verify_note() below). Gating first would eat
+     * the confirmation, the job would retry PR and end as failed while the
+     * node already holds the id. */
+    s_pair_nodes[id].id = id;
+    s_pair_nodes[id].temp = temp;
+    s_pair_nodes[id].age_s = 0;
+    pair_verify_note(id);
+
     /* Registered-sensor gate (LoRa.txt: "X" = confirmation of receipt of a
      * temperature measurement, i.e. a real sensor). A frame from a radio id
      * the config no longer binds — typically a node just deleted via
@@ -314,6 +325,12 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
      * factory-reset (BOOT) — is logged for visibility but NOT acked. */
     he_config_lock();
     const bool bound = sensor_manager_radio_bound(id);
+    if (bound) {
+        if (he_isnan(temp))
+            sensor_manager_lora_err(id);
+        else if (temp >= HE_TEMP_MIN_LOGICAL && temp <= HE_TEMP_MAX_ACCEPT)
+            sensor_manager_lora_update(id, temp);
+    }
     he_config_unlock();
     if (!bound) {
         char ev[44];
@@ -326,9 +343,6 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
 
     if (he_isnan(temp)) {
         ESP_LOGW(TAG, "sensor T%d reports ERR (bin)", id);
-        he_config_lock();
-        sensor_manager_lora_err(id);
-        he_config_unlock();
         send_binary_ack(id);
         return;
     }
@@ -337,14 +351,6 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
         s_rx_rejected++;
         return;
     }
-    s_pair_nodes[id].id = id;
-    s_pair_nodes[id].temp = temp;
-    s_pair_nodes[id].age_s = 0;
-    pair_verify_note(id);
-
-    he_config_lock();
-    sensor_manager_lora_update(id, temp);
-    he_config_unlock();
     ESP_LOGI(TAG, "T%d = %.2f C (bin)", id, temp);
     send_binary_ack(id);
 }
