@@ -73,7 +73,7 @@ Firmware jest podzielony na moduły w `main/`:
 | Plik                  | Moduł (spec)         | Odpowiedzialność                                                  |
 |-----------------------|----------------------|-------------------------------------------------------------------|
 | `sensor_manager.c`    | sensor_manager       | UART z zewn. interfejsem, średnia krocząca 8, temp. efektywna, walidacja, otwarte okno, estymacja strat łącza radiowego |
-| `lora_receiver.c`     | lora_receiver        | odbiornik LoRa (Ebyte E32), zadanie FreeRTOS, dekodowanie ramek tekstowych (ESP-IDF) i binarnych `02 E3` (Arduino) ze zdalnego węzła DS18x20, sterowanie kanałem RF, tryb testowy `/api/lora/test` |
+| `lora_receiver.c`     | lora_receiver        | odbiornik LoRa (Ebyte E32), zadanie FreeRTOS, dekodowanie ramek binarnych `02 E3` (protokół `LoRa.txt`) ze zdalnego węzła DS18x20, sterowanie kanałem RF, tryb testowy `/api/lora/test` |
 | `simulation_manager.c`| simulation_manager   | symulacja czujników i model cieplny budynku                       |
 | `control_engine.c`    | control_engine       | automat stanów, histereza, profil dobowy, BOOST, wybieg, awaryjny |
 | `heating_output.c`    | heating_output       | linia GPIO, impulsy wybiegu pompy, symulacja wyjścia              |
@@ -122,21 +122,25 @@ od góry i skrajny dolny prawego headera oraz 2./9./11. lewego; IO14/IO12
 zwykłe GPIO.
 
 Moduł LoRa na sterowniku działa w trybie nasłuchu (AUX/TX-RX na LOW). Sterownik
-obsługuje **dwa** protokoły ramek (patrz `lora_receiver.c`) i odpowiada w tym
-samym formacie, w którym ramka przyszła:
+obsługuje **wyłącznie protokół binarny** zgodny z `LoRa.txt` — ramka
+`<0x02 0xE3><payload>T<id>#`, ACK to `<0x02 0xE3>X<id>T9#`, parowanie
+`<0x02 0xE3>PR<id>T9#` (węzeł o ID 0 zapisuje nowe ID; kontroler potwierdza
+parowanie dopiero po świeżym ogłoszeniu `T<id>`).
 
-- **tekstowy** (węzeł ESP-IDF, `Sensor/main/`): `"TT.TTT T<id>&\r\n"`; ACK to
-  `"ACK <id>&"` (adresowany — węzeł ignoruje ACK innego ID).
-- **binarny** (Arduino, `Sensor/LoRa_sensor.ino`, zgodny z `LoRa.txt`):
-  `<0x02 0xE3><payload>T<id>#`; ACK to `<0x02 0xE3>X<id>T9#`.
+Każda inna linia — zdeformowana ramka binarna lub tekst starodawnego
+węzła (`"TT.TTT T<id>&"`, `ACK <id>&`, podpisane `PAIR ...`) — jest
+**odrzucana**: trafia do logu zdarzeń (`lora rx: ...`) i licznika
+`lora_garbage`, a jej dane **nie mogą** zasilić żadnego czujnika. Stary
+protokół tekstowy nie ma ani nagłówka, ani sumy kontrolnej, więc akceptacja
+pozwalałaby pojedynczej zmianie bitu na RF bezpowrotnie podmienić pomiar.
 
 `lora_receiver` dekoduje każdą ramkę w osobnym zadaniu FreeRTOS (`lora_rx`)
 i przekazuje pomiar do `sensor_manager_lora_update()` pod blokadą
-`he_config_lock()`. Bufor akumuluje bajty i kończy ramkę na `&` (tekst) lub `#`
-(binarnie), więc kilka ramek obecnych w buforze modułu jest przetwarzane
-osobno; ramki niezgodne ze wzorcem magic `02 E3` są ignorowane. Aktualizacje
-pomijane są dla czujników wyłączonych lub symulowanych — radio nie może ich
-nadpisać.
+`he_config_lock()`. Bufor akumuluje bajty i kończy ramkę na `&` lub `#`
+(kilka ramek obecnych w buforze modułu jest przetwarzanych osobno); scanner
+binarny resynchronizuje się na bajtach magic `02 E3` w dowolnym miejscu
+linii. Aktualizacje pomijane są dla czujników wyłączonych lub symulowanych —
+radio nie może ich nadpisać.
 
 ### Test łącza i weryfikacja modułu (`/api/lora/test`)
 
@@ -164,14 +168,13 @@ pozwala ustawić kanał ręcznie z panelu (zakres 0..83 → 410..493 MHz).
 Zgodnie z `LoRa.txt` węzeł wysyła pomiar **co 20 s + losowe 0..2 s**, więc
 nominalny odstęp to ~21 s (`HE_LORA_FRAME_PERIOD_MS = 21000` — używane do
 estymacji strat, patrz sekcja A2). Obce ramki LoRa odbierane na tym samym
-kanale są ignorowane przez parser (wymagany magic `02 E3` lub format
-`TT.TTT T<id>&`).
+kanale są odrzucane przez parser (wymagany magic `02 E3`; wszystko inne
+trafia do logu i licznika `lora_garbage`).
 
-#### Implementacja Arduino (`Sensor/LoRa_sensor.ino`) — protokół binarny
+#### Prawidłowy węzeł — protokół binarny
 
-Oprócz tekstowego sensora ESP-IDF (`Sensor/main/main.c`) istnieje równoległa
-implementacja Arduino (`Sensor/LoRa_sensor.ino`), która używa **binarnego**
-formatu ramek z magiciem `0x02 0xE3`:
+Węzeł (`Sensor/`, wersja ESP-IDF, i równoległy szkic `Sensor/LoRa_sensor.ino`)
+musi nadawać **wyłącznie** format binarny z magic `0x02 0xE3`:
 
 ```
 <0x02 0xE3><payload>T<ID>#
@@ -182,19 +185,18 @@ formatu ramek z magiciem `0x02 0xE3`:
 - ACK kontrolera: `02 E3 X2T9#` (payload = `X2`, kontroler T9)
 - Parowanie (kontroler→węzeł): `02 E3 PR3T9#` (payload = `PR3`)
 
-Kontroler obsługuje oba protokoły (tekstowy ESP-IDF i binarny Arduino).
+Kontroler akceptuje TYLKO ten protokół. Ramki tekstowe (`TT.TTT T<id>&` itp.)
+są zapisywane w logu i liczone jako `lora_garbage` — nigdy nie są akceptowane
+jako dane pomiarowe (patrz wyżej).
 Szczegóły w `LoRa.txt` (katalog główny repozytorium).
 
 ### Parowanie węzłów LoRa (dodanie czujnika / zmiana ID)
 
-Protokół radiowy (433 MHz), dwa warianty w zależności od typu węzła:
-
-- Węzeł niesparowany (ID 0) ogłasza się co cykl: tekst `TT.TTT T00&` albo
-  binar `02 E3 <temp> T0#`.
-- Węzeł sparowany nadaje `T<n>` (tekst) lub `T<n>#` (binar).
-- Kontroler potwierdza adresowany pomiar: `ACK <id>&` (tekst) lub
-  `02 E3 X<id>T9#` (binar). Węzeł ignoruje ACK innego ID.
-- Węzeł bez odczytu sond wysyła marker błędu `ERR` (`ERR T&` / `02 E3 ERRT2#`).
+- Węzeł niesparowany (ID 0) ogłasza się co cykl binarnie: `02 E3 <temp> T0#`.
+- Węzeł sparowany nadaje `02 E3 <temp> T<n>#`.
+- Kontroler potwierdza adresowany pomiar: `02 E3 X<id>T9#`. Węzeł ignoruje
+  ACK innego ID.
+- Węzeł bez odczytu sond wysyła marker błędu `02 E3 ERRT<id>#`.
 
 Procedura parowania (UI → „＋ Dodaj czujnik LoRa" albo banner „Wykryto
 nieskonfigurowany czujnik"):

@@ -30,10 +30,10 @@ static const char *TAG = "lora";
 static volatile bool s_test_active = false;
 
 /* ---- Pairing scanner ----
- * Nodes announce themselves with "TT.TTT T<n>&" where n = 0 (unpaired)
- * or n = radio id (NVS-persisted). Every announcement is stored
+ * Nodes announce themselves with "<0x02 0xE3><temp>T<id>#" where the id is
+ * 0 (unpaired) or the radio id (NVS-persisted). Every announcement is stored
  * indexed by radio id so the pairing UI can show ALL detected devices
- * with their LoRa ids (not only the latest "T00"). */
+ * with their LoRa ids (not only the latest "T0"). */
 #define HE_PAIR_REQ_TTL_MS  30000   /* announcement older than this is stale */
 
 static lora_node_desc_t s_pair_nodes[HE_MAX_SENSORS + 1];  /* [id] */
@@ -189,44 +189,6 @@ void lora_receiver_test_mode(bool on)
     s_test_active = on;
 }
 
-/* Parse one line "TT.TTT T<id>&" into (id, temperature).
- * Returns true on success. id is 1..HE_MAX_SENSORS; temperature in degC.
- * Also accepts "ERR T&" as a sensor-failure marker (id=0, temp=NAN). */
-static bool parse_line(const char *line, int *out_id, float *out_temp)
-{
-    /* Minimal validation: must contain '&' and 'T'. */
-    const char *amp = strchr(line, '&');
-    if (!amp) return false;
-    const char *t = strchr(line, 'T');
-    if (!t) return false;
-
-    /* "ERR T&" → failure marker. */
-    if (strncmp(line, "ERR", 3) == 0) {
-        *out_id = 0;
-        *out_temp = he_nan();
-        return true;
-    }
-
-    /* Temperature is the float before the first space. */
-    char *endp = NULL;
-    float temp = strtof(line, &endp);
-    if (endp == line || endp >= amp) return false;
-
-    /* Skip spaces, expect 'T', then the numeric id. */
-    while (*endp == ' ') endp++;
-    if (*endp != 'T') return false;
-    endp++;
-    long id = strtol(endp, &endp, 10);
-    if (id < 0 || id > HE_MAX_SENSORS) return false;
-    /* The id may be followed by '&' or whitespace+&'. */
-    while (*endp == ' ' || *endp == '\r' || *endp == '\n') endp++;
-    if (*endp != '&') return false;
-
-    *out_id = (int)id;
-    *out_temp = temp;
-    return true;
-}
-
 /* ---- Binary protocol (LoRa.txt, Arduino node) ----
  * The node sends measurements (payload = temperature as "%02.3f") or "ERR"
  * for a probe failure; the controller answers with an "X<id>" ack payload and
@@ -359,14 +321,21 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
     send_binary_ack(id);
 }
 
+/* Process one received line. The ONLY accepted traffic arrives as a binary
+ * frame (LoRa.txt: "<0x02 0xE3><payload>T<id>#"). Anything else — a malformed
+ * binary frame or the legacy vendor text ("TT.TTT T<id>&" / "ACK <id>&",
+ * which has no preamble and no integrity check) — is counted as garbage and
+ * logged once so the operator sees exactly what was rejected, but NEVER fed
+ * to the sensor manager: a single RF bit-flip must not be able to silently
+ * corrupt a measurement, and a foreign network must not feed a sensor. */
 static void process_line(const char *line)
 {
-    /* Binary frame? Resync on the raw magic bytes at any offset so leading
-     * garbage from a previous frame cannot hide a valid one. */
     size_t len = strlen(line);
+    bool had_magic = false;
     for (size_t i = 0; i + 1 < len; i++) {
         if ((uint8_t)line[i] == HE_LORA_BIN_MAGIC0 &&
             (uint8_t)line[i + 1] == HE_LORA_BIN_MAGIC1) {
+            had_magic = true;
             int bid;
             float btemp;
             int kind = parse_binary((const uint8_t *)line + i, len - i, &bid, &btemp);
@@ -379,73 +348,19 @@ static void process_line(const char *line)
                 bin_log_rx((const uint8_t *)line + i, len - i);
                 return;
             }
-            break;   /* magic-like bytes but malformed: fall through to text */
+            break;   /* magic present but malformed: reject below */
         }
     }
 
-    char ev[40];
-    snprintf(ev, sizeof(ev), "lora rx: %s", line);
-    storage_log_event(FAULT_NONE, 0, ev);
-    ESP_LOGI(TAG, "rx frame: \"%s\"", line);
-    int id;
-    float temp;
-    if (!parse_line(line, &id, &temp)) {
-        ESP_LOGW(TAG, "malformed line: %s", line);
-        s_rx_garbage++;
-        return;
+    if (had_magic) {
+        bin_log_rx((const uint8_t *)line, len);
+    } else {
+        char ev[HE_LORA_LINE_MAX + 16];
+        snprintf(ev, sizeof(ev), "lora rx: %s", line);
+        storage_log_event(FAULT_NONE, 0, ev);
+        ESP_LOGW(TAG, "rejected (no magic 02 E3): %s", line);
     }
-
-    if (id == 0) {
-        /* "TT.TTT T00&" = unpaired node announcement (distinct from the
-         * "ERR T&" failure marker handled above, which arrives with a NaN
-         * temperature). Record only real announcements for the web pairing
-         * UI; do not feed them to the sensor manager. */
-        if (he_isnan(temp)) {
-            ESP_LOGW(TAG, "sensor reports error (ERR T&)");
-            return;
-        }
-        /* Record the announcement indexed by radio id (0 = unpaired). */
-        s_pair_nodes[0].id = 0;
-        s_pair_nodes[0].temp = temp;
-        s_pair_nodes[0].age_s = 0;
-        pair_verify_note(0);
-        ESP_LOGI(TAG, "pairing request: T00 = %.2f C", temp);
-        return;
-    }
-
-    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_ACCEPT) {
-        ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
-        s_rx_rejected++;
-        return;
-    }
-
-    /* Track paired-node announcements for the pairing scanner too */
-    s_pair_nodes[id].id = id;
-    s_pair_nodes[id].temp = temp;
-    s_pair_nodes[id].age_s = 0;
-    pair_verify_note(id);
-
-    if (temp < HE_TEMP_MIN_LOGICAL || temp > HE_TEMP_MAX_ACCEPT) {
-        ESP_LOGW(TAG, "T%d out of range: %.2f", id, temp);
-        return;
-    }
-
-    /* Forward under the shared config lock — sensor_manager_poll() and the
-     * HTTP handlers touch the same sensor_t array from other tasks/cores. */
-    he_config_lock();
-    sensor_manager_lora_update(id, temp);
-    he_config_unlock();
-
-    ESP_LOGI(TAG, "T%d = %.2f C", id, temp);
-
-    /* Acknowledge the addressed node only: "ACK <id>&" — a node ignores
-     * ACK frames carrying another node's radio id. */
-    char ack[16];
-    snprintf(ack, sizeof(ack), "ACK %d&", id);
-    uart_write_bytes(HE_LORA_UART, (const uint8_t *)ack, strlen(ack));
-    snprintf(ev, sizeof(ev), "lora tx: ACK -> T%d", id);
-    storage_log_event(FAULT_NONE, 0, ev);
-    ESP_LOGI(TAG, "tx ack: \"%s\"", ack);
+    s_rx_garbage++;
 }
 
 static void lora_rx_task(void *arg)

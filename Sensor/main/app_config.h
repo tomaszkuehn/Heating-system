@@ -2,8 +2,9 @@
  * Global hardware / wiring configuration for the DS18x20 sensor node.
  *
  * The node reads up to HE_MAX_SENSORS DS18B20 probes on a 1-Wire bus and
- * sends the readings to the heating controller over a LoRa radio as
- * text lines ("TT.TTT T<id>&"). A UART debug link mirrors the traffic.
+ * sends the readings to the heating controller over a LoRa radio as binary
+ * frames "<0x02 0xE3><payload>T<id>#" (LoRa.txt). A UART debug link mirrors
+ * the traffic.
  *
  * Centralised so it can be retargeted without touching module logic.
  */
@@ -53,14 +54,15 @@ extern "C" {
 
 /* ---- Timing ---- */
 #define HE_WDT_TIMEOUT_SEC     19            /* task watchdog timeout     */
-#define HE_LORA_RX_WINDOW_MS   5000         /* ACK receive window         */
+#define HE_LORA_RX_WINDOW_MS   5000         /* pairing receive window     */
 #define HE_LORA_FRAME_PERIOD_MS 20000       /* LoRa.txt: frame every 20 s */
 #define HE_LORA_FRAME_JITTER_MS 2000        /* LoRa.txt: + random 0-2 s   */
 #define HE_LORA_INIT_MS        4000         /* wait after AT+RESET        */
 #define HE_LORA_PWR_SETTLE_MS  500          /* settle after power change  */
-#define HE_STATUS_OK            50          /* confirmed link status      */
-#define HE_STATUS_PWR_DOWN      40          /* threshold to drop power    */
-#define HE_STATUS_REBOOT        1           /* threshold to force reboot  */
+/* LoRa.txt: acknowledge within 2 s, else raise power and repeat once. */
+#define HE_LORA_ACK_TIMEOUT_MS  2000
+/* Cyclic reboot when the controller stopped acknowledging entirely. */
+#define HE_LORA_NO_ACK_REBOOT_MS 120000UL
 
 /* ---- Sensor count / limits ---- */
 #define HE_MAX_SENSORS         6             /* 1..6 internal probes       */

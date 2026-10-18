@@ -2,8 +2,8 @@
 
 Bezprzewodowy węzeł pomiarowy dla systemu ogrzewania: odczytuje
 termometry DS18B20 na magistrali 1-Wire i wysyła temperatury do sterownika
-(`Heating/`) przez radio LoRa, formatem tekstowym obsługiwanym przez
-`lora_receiver`.
+(`Heating/`) przez radio LoRa w binarnym protokole `LoRa.txt`
+(`<0x02 0xE3><payload>T<id>#`), obsługiwanym przez `lora_receiver`.
 
 ## Architektura
 
@@ -14,7 +14,7 @@ Firmware podzielony na moduły w `main/`:
 | `onewire.c`      | onewire   | bit-banging 1-Wire (RESET, R/W, SEARCH_ROM, CRC8 0x31)   |
 | `ds18b20.c`      | ds18b20   | enumeracja DS18B20, CONVERT_T, odczyt scratchpad          |
 | `lora.c`         | lora      | UART do radia LoRa, komendy AT, non-blocking odbiór       |
-| `main.c`         | —         | zadanie FreeRTOS, watchdog, logika statusu i rekonfiguracji|
+| `main.c`         | —         | zadanie FreeRTOS, watchdog, logika ACK/mocy i rekonfiguracji|
 
 ## Budowanie i wgrywanie
 
@@ -28,29 +28,39 @@ idf.py -p COMx flash monitor
 
 ## Format danych
 
-Tekstowy, zgodny z oryginalnym szkicem: po jednej linii na czujnik,
+Binarny, zgodny ze specyfikacją `LoRa.txt` (katalog główny repozytorium).
+Ramka: `<0x02 0xE3><payload>T<ID>#` — magic to dwa surowe bajty, nie tekst.
 
-```
-TT.TTT T<NN>&<CR><LF>
-```
+- Pomiar: `02 E3 22.361 T4#` — payload = temperatury `%02.3f` (np.
+  `21.500` dla 21,500 °C), ID węzła = 4.
+- Awaria sondy (DS18B20 nie odpowiedział): payload `ERR` — `02 E3 ERRT4#`.
+- ACK kontroler→węzeł: `02 E3 X4T9#` (kontroler = ID 9); węzeł akceptuje ACK
+  wyłącznie dla własnego ID w oknie 2 s po wysyłce (ramki `X<n>` innego ID —
+  patrz pkt 15 `LoRa.txt` — są ignorowane).
+- Parowanie kontroler→węzeł: `02 E3 PR<n>T9#` (tylko dla węzła o ID 0).
 
-np. `21.500 T01&` dla czujnika 1 = 21,50 °C. Brak odczytu → linia `ERR T&`.
+Ramki niepasujące do tego wzorca sterownik odzyskuje w logu i liczniku
+`lora_garbage` — nigdy nie są akceptowane jako dane pomiarowe (stary format
+tekstowy `TT.TTT T<NN>&` nie ma sum kontrolnych i jest odrzucany).
 
 ## Parowanie i reset (wersja ESP-IDF)
 
-- Węzeł niesparowany (ID 0) ogłasza się ramką `TT.TTT T00&` i nasłuchuje
-  komendy parowania.
-- Przyjmowana jest **binarna** ramka `02 E3 PR<n>T9#` (`LoRa.txt`, aktualny
-  kontroler) oraz — jako fallback dla starszych buildów kontrolera —
-  podpisana HMAC ramka tekstowa `PAIR <id> <nonce> <tag>` (ochrona przed
-  replay: pierścień 32 nonce'ów w NVS).
+- Węzeł niesparowany (ID 0) ogłasza się ramką `02 E3 <temp> T0#` i
+  nasłuchuje komendy parowania.
+- Przyjmowana jest **binarna** ramka `02 E3 PR<n>T9#` (`LoRa.txt`,
+  aktualny kontroler) — wyłącznie, gdy `sender` = 9 i ID węzła = 0.
 - Po przyjęciu ID zapisywane jest w NVS (klucz `node_id`, przetrwa restart);
-  węzeł odpowiada `OK T<n>&` i przechodzi do normalnej pracy.
+  węzeł natychmiast wysyła ogłoszenie `02 E3 <temp> T<n>#` pod nowym ID —
+  kontroler potwierdza parowanie dopiero po zaobserwowaniu tej ramki.
 - Reset do fabrycznego ID 0: przytrzymanie **BOOT ≥ 5 s** (dioda zapala się
   po osiągnięciu progu, ID zerowane, reboot po zwolnieniu przycisku).
 - Rytm pomiarów (LoRa.txt): co **20 s + losowe 0–2 s**, liczone start-do-startu
-  (okno ACK i odczyty sond wliczają się w odstęp). Po wysyłce węzeł otwiera
-  okno nasłuchu ACK (`HE_LORA_RX_WINDOW_MS`).
+  (okno ACK i odczyty sond wliczają się w odstęp), po ramce węzeł nasłuchuje
+  ACK przez `HE_LORA_ACK_TIMEOUT_MS` = 2 s.
+- Zarządzanie mocą (LoRa.txt): brak ACK w 2 s → podniesienie mocy
+  (`AT+POWER=3`) i jednorazowa powtórka tej samej ramki; ACK → powrót do
+  mocy standardowej (`AT+POWER=1`); brak jakichkolwiek ACK przez
+  `HE_LORA_NO_ACK_REBOOT_MS` = 120 s → cykliczny restart węzła.
 
 ## Alternatywna implementacja Arduino (`LoRa_sensor.ino`)
 
