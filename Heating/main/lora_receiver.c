@@ -307,6 +307,23 @@ static void process_binary(int id, float temp, const uint8_t *raw, size_t len)
         ESP_LOGI(TAG, "pairing request (bin): T0 = %.2f C", temp);
         return;
     }
+    /* Registered-sensor gate (LoRa.txt: "X" = confirmation of receipt of a
+     * temperature measurement, i.e. a real sensor). A frame from a radio id
+     * the config no longer binds — typically a node just deleted via
+     * /api/lora/unpair, which keeps transmitting its saved id until it is
+     * factory-reset (BOOT) — is logged for visibility but NOT acked. */
+    he_config_lock();
+    const bool bound = sensor_manager_radio_bound(id);
+    he_config_unlock();
+    if (!bound) {
+        char ev[44];
+        snprintf(ev, sizeof(ev), "lora rx: T%d — brak czujnika, bez ack", id);
+        storage_log_event(FAULT_NONE, 0, ev);
+        ESP_LOGW(TAG, "frame T%d dropped (no registered sensor — no ack)", id);
+        s_rx_rejected++;
+        return;
+    }
+
     if (he_isnan(temp)) {
         ESP_LOGW(TAG, "sensor T%d reports ERR (bin)", id);
         he_config_lock();

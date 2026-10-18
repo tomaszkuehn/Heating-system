@@ -238,6 +238,14 @@ można przywrócić do fabrycznego 0 wyłącznie jego przyciskiem BOOT (przytrzy
 `POST /api/lora/unpair?id=N` tylko zwalnia slot w konfiguracji (węzeł zachowuje
 swoje ID).
 
+Uwaga: po usunięciu czujki kontroler **nie potwierdza** ramek dawnego węzła —
+ramka `X<id>` jest potwierdzeniem pomiaru **zarejestrowanego** czujnika
+(`LoRa.txt`), więc ID zwolnione przez `/api/lora/unpair` dostaje bez ACK:
+ramki widoczne w logu (`lora rx: T<n> — brak czujnika, bez ack`) i liczniku
+odrzuconych. Węzeł reaguje na brak ACK zgodnie ze spec podnoszeniem mocy
+(+2 dB/ramka) i rebootem po 120 s — do ponownego parowania trzeba go
+przywrócić do ID 0 przyciskiem BOOT.
+
 Uwaga: ramka `ERR T&` (brak sond) jest ignorowana przez logikę parowania —
 dawniej była błędnie traktowana jako ogłoszenie `T00` z temperaturą NaN.
 

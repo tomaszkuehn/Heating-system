@@ -57,6 +57,11 @@ void sensor_manager_restore(int id);
  * disabled/simulated. */
 void sensor_manager_lora_update(int id, float temperature);
 
+/* Does any internal sensor slot still bind this paired radio id? Called by
+ * lora_receiver under he_config_lock() to gate ACKs: radio ids released via
+ * /api/lora/unpair are unregistered, so their frames no longer get acked. */
+bool sensor_manager_radio_bound(int radio_id);
+
 /* Record a radio-frame arrival for a sensor and update its loss estimate
  * (missed/expected over the sliding window of the last 8 arrival slots).
  * Called by sensor_manager_lora_update. Exposed for tests. */

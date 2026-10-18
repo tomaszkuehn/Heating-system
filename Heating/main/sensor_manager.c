@@ -616,6 +616,17 @@ void sensor_manager_restore(int id)
     }
 }
 
+bool sensor_manager_radio_bound(int radio_id)
+{
+    /* Caller holds the config lock (same convention as lora_update/err).
+     * True when any internal sensor slot still carries this paired radio id;
+     * after /api/lora/unpair deletes the last binding the id becomes free. */
+    if (radio_id < 1 || radio_id > HE_MAX_SENSORS) return false;
+    for (int k = 0; k < s_count; k++)
+        if (s_sensors[k].radio_id == radio_id) return true;
+    return false;
+}
+
 void sensor_manager_lora_update(int id, float temperature)
 {
     /* Route by the paired radio id (radio_id), NOT the logical sensor id:
