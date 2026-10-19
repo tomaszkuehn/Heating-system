@@ -214,17 +214,6 @@ esp_err_t storage_save_config(const system_config_t *cfg)
     return err;
 }
 
-esp_err_t storage_reset_network(system_config_t *cfg)
-{
-    if (!cfg) return ESP_ERR_INVALID_ARG;
-    strncpy(cfg->wifi_ssid, HE_DEFAULT_AP_SSID, sizeof(cfg->wifi_ssid) - 1);
-    cfg->wifi_ssid[sizeof(cfg->wifi_ssid) - 1] = '\0';
-    strncpy(cfg->wifi_pass, HE_DEFAULT_AP_PASS, sizeof(cfg->wifi_pass) - 1);
-    cfg->wifi_pass[sizeof(cfg->wifi_pass) - 1] = '\0';
-    cfg->wifi_sta_mode = false;
-    return storage_save_config(cfg);
-}
-
 /* ---- Profile files (LittleFS) ---- */
 static void profile_path(const char *name, char *out, size_t outlen)
 {

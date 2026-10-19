@@ -19,18 +19,9 @@ CONFIG_ESP_TASK_WDT_EN=y
 # watched too, so a priority task starving idle also resets.
 CONFIG_ESP_TASK_WDT_PANIC=y
 
-# --- WiFi ---
-CONFIG_ESP_WIFI_ENABLED=y
-CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
-# The SoftAP config path (network_manager.c) hard-codes WPA2_PSK; the firmware
-# never uses WPA3/SAE/OWE or WPS. Disabling them drops the SAE/Dragonfly/OWE
-# crypto from libwpa_supplicant.a (~hundreds of KB of flash) with no behaviour
-# change for this device.
-CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
-CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
-CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
-CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
-# CONFIG_WPS is already off (no app code references WPS).
+# --- WiFi REMOVED (device is Ethernet-only) ---
+CONFIG_ESP_WIFI_ENABLED=n
+CONFIG_ESP_WIFI_STA_DISABLED=y
 
 # --- Ethernet (WT32-ETH01 V1.4, LAN8720 PHY at address 0) ---
 # RMII data pins are hardwired in ESP32 silicon. 50 MHz oscillator on GPIO0.

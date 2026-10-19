@@ -598,14 +598,10 @@ function renderModes(s) {
     /* per-event-type e-mail subscription (safe booleans). */
     if ($('nEvFaults'))  $('nEvFaults').checked  = s.notify_ev.faults;
     if ($('nEvRestart')) $('nEvRestart').checked = s.notify_ev.restart;
-    /* Network + notification settings echo. Secrets (wifi_pass, smtp_pass) are
-     * intentionally NOT populated — those inputs stay empty, and an empty value
-     * on save means "keep current" server-side (so a refresh never clobbers a
-     * freshly-typed password either). */
-    if (s.wifi) {
-      if ($('netSta'))  $('netSta').checked  = !!s.wifi.sta_mode;
-      if ($('netSsid')) $('netSsid').value   = s.wifi.ssid || '';
-    }
+    /* Notification settings echo. Secrets (smtp_pass) are intentionally NOT
+     * populated — that input stays empty, and an empty value on save means
+     * "keep current" server-side (so a refresh never clobbers a freshly-typed
+     * password either). */
     if (s.notify) {
       if ($('nEmail'))    $('nEmail').checked    = !!s.notify.email_enabled;
       if ($('nSms'))      $('nSms').checked      = !!s.notify.sms_enabled;
@@ -1286,7 +1282,6 @@ $('btnLoraSend').onclick = async () => {
 };
 $('btnPump').onclick = () => post('/api/pump', { enabled: $('pumpEn').checked, impulse: +$('pumpImpulse').value, period: +$('pumpPeriod').value, total: +$('pumpTotal').value }, true).then(() => refresh());
 $('btnEm').onclick = () => post('/api/emergency', { enabled: $('emEn').checked, on: +$('emOn').value, period: +$('emPeriod').value, on_fault: $('emFault').checked }, true).then(() => refresh());
-$('btnNet').onclick = () => post('/api/network', { sta_mode: $('netSta').checked, ssid: $('netSsid').value, pass: $('netPass').value }, true).then(() => refresh());
 $('btnNotify').onclick = () => post('/api/notify', { email_enabled: $('nEmail').checked, email_to: $('nEmailTo').value, smtp_host: $('nSmtpHost').value, smtp_port: +$('nSmtpPort').value, smtp_user: $('nSmtpUser').value, smtp_pass: $('nSmtpPass').value, sms_enabled: $('nSms').checked, sms_phone: $('nSmsPhone').value, sms_gateway: $('nSmsGw').value }, true).then(() => refresh());
 $('btnNotifyTest').onclick = async () => {
   const res = $('notifyResult');

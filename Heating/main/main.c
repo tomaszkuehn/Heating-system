@@ -300,7 +300,6 @@ void app_main(void)
 
     /* Communication / presentation layers. */
     network_init(&g_cfg);
-    network_start_reset_button(&g_cfg);
     web_ui_init(&g_cfg);
 
     /* Control loop (watchdog-guarded). */

@@ -195,9 +195,6 @@ esp_err_t storage_fs_usage(size_t *total, size_t *used);
  * erase cycles and endurance percentage based on 100k-cycle rated flash. */
 esp_err_t storage_get_flash_wear(storage_flash_wear_t *w);
 
-/* Reset network portion of config only (keeps user settings, spec 12). */
-esp_err_t storage_reset_network(system_config_t *cfg);
-
 #ifdef __cplusplus
 }
 #endif

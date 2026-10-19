@@ -579,19 +579,17 @@ static esp_err_t h_state(httpd_req_t *req)
         edname,
         s_cfg->notify_ev_faults ? "true" : "false",
         s_cfg->notify_ev_restart ? "true" : "false");
-    /* Echo the current network + notification settings so the UI can show them
-     * (SSID/mode in the Sieć card, recipients/servers in Powiadomienia). Secrets
-     * (wifi_pass, smtp_pass) are deliberately NOT emitted — the UI leaves those
-     * fields empty and the save handlers treat an empty password as "keep
+    /* Echo the current notification settings so the UI can show them.
+     * The historic WiFi settings are gone from the UI (Ethernet-only device);
+     * their NVS fields stay for blob-layout safety but are never serialized.
+     * Secrets (smtp_pass) are deliberately NOT emitted — the UI leaves that
+     * field empty and the save handler treats an empty password as "keep
      * current". One shared escape buffer (largest field is 64 -> 64*6+1) keeps
      * the stack footprint small; httpd stack is 8192. */
     char ebuf[64 * 6 + 1];
     p += snprintf(b + p, sizeof(b) - p,
-        ",\"wifi\":{\"sta_mode\":%s,\"ssid\":\"",
-        s_cfg->wifi_sta_mode ? "true" : "false");
-    json_escape(s_cfg->wifi_ssid, ebuf, sizeof(ebuf));
-    p += snprintf(b + p, sizeof(b) - p, "%s\"},\"notify\":{\"email_enabled\":%s,"
-        "\"sms_enabled\":%s,\"email_to\":\"", ebuf,
+        ",\"notify\":{\"email_enabled\":%s,"
+        "\"sms_enabled\":%s,\"email_to\":\"",
         s_cfg->notify.email_enabled ? "true" : "false",
         s_cfg->notify.sms_enabled ? "true" : "false");
     json_escape(s_cfg->notify.email_to, ebuf, sizeof(ebuf));
@@ -898,30 +896,8 @@ static esp_err_t h_notify_test(httpd_req_t *req)
     return httpd_resp_send(req, buf, n);
 }
 
-/* ---- /api/network (POST) ---- */
-static esp_err_t h_network(httpd_req_t *req)
-{
-    char body[512]; read_body(req, body, sizeof(body));
-    bool sta;
-    char tmp[64];
-    CFG_LOCK();
-    if (json_bool(body, "sta_mode", &sta)) s_cfg->wifi_sta_mode = sta;
-    /* Treat an empty ssid/pass as "leave unchanged": the UI now echoes the
-     * current SSID (not the password), so an empty pass on save must NOT blank
-     * the stored credential. Only overwrite when the client sends a non-empty
-     * value (i.e. the user typed a new one). */
-    if (json_str(body, "ssid", tmp, sizeof(tmp)) && tmp[0]) {
-        strncpy(s_cfg->wifi_ssid, tmp, sizeof(s_cfg->wifi_ssid) - 1);
-        s_cfg->wifi_ssid[sizeof(s_cfg->wifi_ssid) - 1] = '\0';
-    }
-    if (json_str(body, "pass", tmp, sizeof(tmp)) && tmp[0]) {
-        strncpy(s_cfg->wifi_pass, tmp, sizeof(s_cfg->wifi_pass) - 1);
-        s_cfg->wifi_pass[sizeof(s_cfg->wifi_pass) - 1] = '\0';
-    }
-    storage_save_config(s_cfg);
-    network_apply(s_cfg);
-    CFG_RET(send_text(req, "ok", 200));
-}
+/* (/api/network POST handler removed with the WiFi feature — the link is
+ * Ethernet-only: static IP from app_config.h, nothing user-configurable.) */
 
 /* ---- /api/sim/sensor (POST) ---- */
 static esp_err_t h_sim_sensor(httpd_req_t *req)
@@ -1593,7 +1569,6 @@ static httpd_uri_t regs[] = {
     { .uri = "/api/notify",  .method = HTTP_POST, .handler = h_notify,       .user_ctx = NULL },
     { .uri = "/api/notify/events", .method = HTTP_POST, .handler = h_notify_events, .user_ctx = NULL },
     { .uri = "/api/notify/test", .method = HTTP_POST, .handler = h_notify_test, .user_ctx = NULL },
-    { .uri = "/api/network", .method = HTTP_POST, .handler = h_network,      .user_ctx = NULL },
     { .uri = "/api/sim/sensor",  .method = HTTP_POST, .handler = h_sim_sensor,  .user_ctx = NULL },
     { .uri = "/api/sim/heating", .method = HTTP_POST, .handler = h_sim_heating, .user_ctx = NULL },
     { .uri = "/api/fault/clear", .method = HTTP_POST, .handler = h_fault_clear, .user_ctx = NULL },

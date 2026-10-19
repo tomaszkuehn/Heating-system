@@ -3,8 +3,9 @@
 Firmware sterownika ogrzewania dla **ESP32-ETH01 (WT32-ETH01 V1.4)** z
 LAN8720, realizujący autonomiczne sterowanie urządzeniem grzewczym na podstawie
 temperatur z 1–6 czujników wewnętrznych (i opcjonalnego czujnika zewnętrznego),
-z interfejsem WWW po **kablowym Ethernetcie (primary)** lub Wi-Fi (fallback),
-rejestracją danych, detekcją awarii i trybem symulacyjnym.
+z interfejsem WWW po **kablowym Ethernetcie (jedynym łączu)**, rejestracją
+danych, detekcją awarii i trybem symulacyjnym. (Stos Wi-Fi i jego ustawienia
+UI/API zostały wycofane — `CONFIG_ESP_WIFI_ENABLED=n`.)
 
 ## Budowanie i wgranie
 
@@ -20,16 +21,14 @@ idf.py build
 idf.py -p COMx flash monitor
 ```
 
-Po pierwszym uruchomieniu urządzenie startuje jako AP `ESP` / `12345678`
-(hasło WPA2 musi mieć min. 8 znaków; gdyby zapisana konfiguracja miała krótsze,
-`repair_config()` przywraca domyślne, aby AP zawsze startował zaszyfrowany).
-Panel WWW: `http://192.168.4.1/` (AP) lub **`http://10.168.34.55/`**
-(statyczny IP po Ethernetcie).
+Panel WWW: **`http://10.168.34.55/`** (statyczny IP po Ethernetcie, stałe
+z `app_config.h`; pól konfiguracji sieci w UI nie ma).
 
-## Ethernet (WT32-ETH01 V1.4, primary)
+## Ethernet (WT32-ETH01 V1.4, jedyne łącze)
 
-Ethernet jest interfejsem podstawowym; Wi-Fi (STA/AP) działa jako fallback
-i ścieżka konfiguracyjna. Kluczowe cechy portu na WT32-ETH01 V1.4:
+Wi-Fi zostało usunięte z firmware (stos `libnet80211`/`libwpa` nie jest
+już linkowany; ustawienia SSID/hasło/tryb nie są przyjmowane z UI ani API).
+Kluczowe cechy portu na WT32-ETH01 V1.4:
 
 - **PHY:** LAN8720, **adres MDIO = 1** (auto-detekcja przy starcie: skan 0–31
   przez SMI, dopasowanie PHY ID `0x0007:xxxx`; fallback: dowolny niemy adres).
@@ -42,8 +41,9 @@ i ścieżka konfiguracyjna. Kluczowe cechy portu na WT32-ETH01 V1.4:
 - **Rejestracja handlerów zdarzeń przed `start_ethernet()`** — statyczne IP
   odpala `IP_EVENT_ETH_GOT_IP` synchronicznie w `esp_eth_start()`, późna
   rejestracja gubi zdarzenie (było źródłem błędu `net:false`).
-- **Fallback:** gdy PHY nie odpowie na MDIO, sterownik ETH nie instaluje się i
-  firmware działa jak dotąd na Wi-Fi (AP/STA).
+- **Brak fallbacku:** gdy PHY nie odpowie na MDIO, sterownik ETH nie
+  instaluje się i urządzenie pozostaje bez sieci — diagnostyka przez log
+  (`ESP_LOGE "No PHY answered"`).
 
 ### Wgrywanie OTA (kabel zamiast przycinania)
 
@@ -79,7 +79,7 @@ Firmware jest podzielony na moduły w `main/`:
 | `heating_output.c`    | heating_output       | linia GPIO, impulsy wybiegu pompy, symulacja wyjścia              |
 | `fault_manager.c`     | fault_manager        | detekcja awarii z modelem odpowiedzi cieplnej, powiadomienia       |
 | `storage_manager.c`   | storage_manager      | NVS (konfig) + LittleFS (profile, historia, logi), agregacja      |
-| `network_manager.c`   | network_manager      | Ethernet (LAN8720, primary), Wi-Fi AP/STA fallback, provisioning, SNTP, przycisk resetu sieci |
+| `network_manager.c`   | network_manager      | Ethernet (LAN8720, jedyne łącze, statyczne IP), SNTP, mDNS        |
 | `web_ui_api.c`        | web_ui_api           | serwer HTTP + REST API + SPA (`web/`)                             |
 | `notification_manager.c` | notification_manager | e-mail (SMTP) / SMS (brama HTTP), wysyłane z osobnego zadania workera (kolejka FreeRTOS, off-loop)                              |
 | `profile.c`           | —                    | profil dobowy 24h: walidacja, JSON, zapis/odczyt                  |
@@ -289,8 +289,9 @@ dawniej była błędnie traktowana jako ogłoszenie `T00` z temperaturą NaN.
 - **LittleFS** — pliki użytkownika, profile dobowe, agregaty dobowe i logi
   (odporny na zaniki zasilania, lepszy od SPIFFS do logowania).
 - **Format `daily.csv`** — jeden wiersz na dzień:
-  `YYYYMMDD,śr_systemowa,śr_zewnętrzna,minuty_grzania`
-  (np. `20240115,21.30,3.10,420`). `minuty_grzania` = liczba minut w dobie z
+  `YYYYMMDD,śr_zbioru_sterującego,śr_zewnętrzna,minuty_grzania`
+  (np. `20240115,21.30,3.10,420`; kolumna systemowa od wycofania Wi-Fi =
+  średnia ważona zbioru sterującego wg maski `ctrl_mask`). `minuty_grzania` = liczba minut w dobie z
   aktywnym przekaźnikiem; znak `-99` w temperaturze oznacza brak odczytu.
 - **Historia minutowa (24 h) jest wyłącznie w RAM** — bufor pierścieniowy
   `s_ring[HE_RING_SIZE = 1440]` (`storage_manager.c`). Wykres 24 h czyta ten
@@ -453,10 +454,12 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
 - Sekcje konfiguracyjne (profil dobowy, wybieg pompy / tryb awaryjny,
   **zabezpieczenia i limity**, sieć, powiadomienia, symulacja) są domyślnie
   zwinięte do paska nagłówka i rozwijane kliknięciem.
-- **Sieć / Powiadomienia pokazują bieżące ustawienia** — SSID i tryb (klient/AP)
-  oraz odbiorcę/serwer SMTP/użytkownika/telefon/bramę SMS. Hasła (Wi-Fi, SMTP)
-  nie są pokazywane; puste pole hasła przy zapisie zachowuje bieżące (patrz
-  sekcja E).
+- **Sekcja „Sieć"** — wyłącznie komunikat że łącze to Ethernet (statyczne IP);
+  ustawienia Wi-Fi i `/api/network` zostały wycofane. Karta zawiera nadal
+  konto panelu (zmiana hasła, wylogowanie).
+- **Powiadomienia pokazują bieżące ustawienia** — odbiorcę/serwer
+  SMTP/użytkownika/telefon/bramę SMS. Hasło SMTP nie jest pokazywane; puste
+  pole hasła przy zapisie zachowuje bieżące (patrz sekcja E).
 - **Profil dobowy** — grid **12 kolumn × 2 rzędy** (12 godzin w wierszu).
   Temperatura wyłączenia (OFF) nad załączenia (ON). Trzy sloty pamięci
   **na urządzeniu** (1/2/3) z jedno-klikowym zapisem i odczytem
@@ -503,7 +506,7 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   trybie symulacji/przyspieszenia ×10) wysyłane jest jednorazowe powiadomienie.
   Wysyłka odbywa się **z osobnego zadania workera** (kolejka FreeRTOS,
   off-loop) — blokujące I/O SMTP/SMS nie blokuje pętli sterowania i nie
-  wyzwala task-watchdog; worker dodatkowo **ponawia do 30 s**, gdy Wi-Fi nie
+  wyzwala task-watchdog; worker dodatkowo **ponawia do 30 s**, gdy sieć nie
   zdąży jeszcze powstać. E-mail zawiera szczegółowy raport: nazwa urządzenia,
   temperatury systemowa i zewnętrzna, liczba sprawnych czujników, stan każdego
   czujnika wewnętrznego (nazwa, jakość, temperatura efektywna) **oraz czujnika
@@ -798,7 +801,7 @@ priorytecie wykrycia).
   (airlock/valve?)") — typowo zapowietrzenie instalacji lub przymknięty zawór.
   Grzanie trwa, ale operator jest ostrzeżony.
 
-#### `FAULT_NETWORK` — brak sieci (Wi-Fi lub Ethernet)
+#### `FAULT_NETWORK` — brak sieci (Ethernet bez IP / link down)
 - **Warunek:** `network_up == false` i brak innej aktywnej awarii (najniższy
   priorytet — informacyjna).
 - **Zakończenie:** **automatyczne** — po ponownym połączeniu (`network_up`)
@@ -850,11 +853,12 @@ awaryjny → awaria → histereza normalna. Każda **zmiana stanu** jest logowan
 
 | Zdarzenie | Warunek | Zakończenie / akcje |
 |---|---|---|
-| **Połączenie STA** | tryb klient i podane SSID | po `IP_EVENT_STA_GOT_IP` ustawiany `network_up`, start SNTP |
-| **Utrata STA** | `WIFI_EVENT_STA_DISCONNECTED` | auto-reconnect do 10 prób; po wyczerpaniu zgłoszony brak sieci (`FAULT_NETWORK`) |
+| **Połączenie ETH** | link + poprawne IP | po `IP_EVENT_ETH_GOT_IP` ustawiany `network_up`, start SNTP |
 | **Utrata ETH link** | `ETHERNET_EVENT_DISCONNECTED` | czyszczenie bitu ETH + `network_up=false` (`FAULT_NETWORK` do czasu powrotu) |
-| **Synchronizacja czasu (SNTP)** | uzyskanie IP w trybie STA | ustawia zegar rzeczywisty; poniżej `HE_TIME_VALID_EPOCH` czas jest „nieważny" i używany jest zegar wirtualny |
-| **Reset sieci (przycisk)** | przytrzymanie zewn. przycisku (GPIO15) przez `HE_NET_RESET_HOLD_MS = 5 s` | `storage_reset_network` + restart AP z domyślnym SSID/hasłem; pozostała konfiguracja zachowana |
+| **Synchronizacja czasu (SNTP)** | uzyskanie IP w ETH | ustawia zegar rzeczywisty; poniżej `HE_TIME_VALID_EPOCH` czas jest „nieważny" i używany jest zegar wirtualny |
+
+(Funkcje Wi-Fi AP/STA i przycisk resetu sieci zostały usunięte razem z
+wycofaniem Wi-Fi; GPIO15 (przycisk) i GPIO2 (LED) są wolne.)
 | **Got IP po ETH** | `IP_EVENT_ETH_GOT_IP` | j.w. — ustawia zegar, startuje mDNS, `network_up=true` (handlery muszą być zarejestrowane przed `esp_eth_start()`) |
 
 ### E. Powiadomienia (`notification_manager.c`)
@@ -892,10 +896,9 @@ pola pod lockiem i odkładają komendę bez blokowania (głębokość kolejki 2;
   zakresem: powiadomienia o zmianach stanu i jakości czujników.
 - **Echo ustawień w UI i ochrona haseł:** karta Powiadomienia ładuje bieżące
   wartości (odbiorca, serwer SMTP, użytkownik, telefon, brama SMS oraz
-  przełączniki e-mail/SMS) z bloku `notify` w `/api/state`; karta Sieć ładuje
-  bieżący SSID i tryb (klient/AP) z bloku `wifi`. **Hasła (SMTP, Wi-Fi) nie są
-  nigdy udostępniane do przeglądarki** — pole hasła pozostaje puste, a pusta
-  wartość przy zapisie (`POST /api/notify` / `POST /api/network`) oznacza
+  przełączniki e-mail/SMS) z bloku `notify` w `/api/state`. **Hasła (SMTP) nie
+  są nigdy udostępniane do przeglądarki** — pole hasła pozostaje puste, a pusta
+  wartość przy zapisie (`POST /api/notify`) oznacza
   „zachowaj bieżące hasło" (nadpisanie następuje tylko po wpisaniu niepustej
   wartości). Pozwala to zmienić np. odbiorcę bez ponownego wpisywania hasła.
 
@@ -959,8 +962,6 @@ sieci (SNTP). Współczynnik: `HE_SIM_TIME_SCALE` w `app_config.h`.
 | Sygnał            | GPIO | Uwaga                       |
 |-------------------|------|-----------------------------|
 | Załączenie pieca  | 32   | linia do przekaźnika (16→32: GPIO16 = zasilanie LAN8720) |
-| Reset sieci (btn) | 15   | zewnętrzny, przytrzymanie 5 s |
-| Dioda LED         | 2    | wbudowana, miga podczas przytrzymania resetu |
 | UART czujników TX | 17   | zewn. interfejs czujników   |
 | UART czujników RX | 13   | (18 = MDIO, stąd przeniesione) |
 | LoRa TX / RX      | 12 / 14 | Ebyte E32 (M0=GPIO4/pin 18, M1=GPIO5/pin 4 `RXD`) |
@@ -968,15 +969,8 @@ sieci (SNTP). Współczynnik: `HE_SIM_TIME_SCALE` w `app_config.h`.
 | ETH: MDC / MDIO   | 23 / 18 | SMI                      |
 | ETH: clk          | 0    | 50 MHz z oscylatora (input) |
 
-### Przycisk resetu sieci + dioda LED
-
-Przytrzymanie przycisku (GPIO15) powoduje:
-- **0–3 s**: wolne miganie diody LED (GPIO2, ~500 ms) — ostrzeżenie.
-- **3–5 s**: szybkie miganie (~200 ms) — za chwilę reset.
-- **≥5 s**: dioda świeci ciągle, **reset konfiguracji sieci** do AP
-  `ESP` / `12345678` (pozostałe ustawienia zachowane), potem gaśnie.
-Puszczenie przed upływem 5 s anuluje operację.
-
+GPIO15 (dawny przycisk resetu sieci) i GPIO2 (dawna LED) są od tej zmiany
+**wolne** — funkcja Wi-Fi AP/STA i związany z nią przycisk zostały usunięte.
 Przycisk EN na module to sprzętowy reset procesora — nie jest obsługiwany
 programowo (podczas trzymania EN kod nie działa).
 

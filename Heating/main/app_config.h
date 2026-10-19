@@ -14,11 +14,10 @@ extern "C" {
  * RMII hardwired: GPIO0(clk),18(MDIO),19(TXD0),21(TX_EN),22(TXD1),
  * 23(MDC),25(RXD0),26(RXD1),27(CRS_DV).
  * GPIO16 = LAN8720 + 50 MHz oscillator power enable (must be HIGH).
- * Relocated: heating relay 16->32 (frees PHY power pin). */
+ * Relocated: heating relay 16->32 (frees PHY power pin).
+ * GPIO15 (former net-reset button) and GPIO2 (former LED) are now free:
+ * WiFi was removed, so the reset-button watcher no longer exists. */
 #define HE_GPIO_HEATING         GPIO_NUM_32   /* relay line to the furnace   */
-#define HE_GPIO_NET_RESET_BTN   GPIO_NUM_15   /* external button: hold 5s => net reset */
-#define HE_GPIO_LED             GPIO_NUM_2    /* onboard LED (blinks during net-reset hold) */
-#define HE_NET_RESET_HOLD_MS    5000          /* 5s hold => network reset    */
 
 /* ---- Sensor interface (external board over UART) ----
  * GPIO17 TX is safe; GPIO18 is MDIO → RX moved to GPIO13. */
@@ -106,7 +105,10 @@ extern "C" {
 #define HE_DEFAULT_WINDOW_IGNORE_SEC  300    /* 5 minutes                    */
 #define HE_WINDOW_IGNORE_MAX_SEC      3600   /* range 0..3600 (0 = no hold)  */
 
-/* ---- Network defaults (spec 12) ---- */
+/* ---- Network defaults (spec 12 history) ----
+ * The AP SSID/pass defaults only feed the legacy wifi_* fields still present
+ * in system_config_t for NVS blob-layout safety; WiFi itself is removed and
+ * these fields are inert. */
 #define HE_DEFAULT_AP_SSID      "ESP"
 #define HE_DEFAULT_AP_PASS      "12345678"    /* WPA2 requires >= 8 chars */
 
