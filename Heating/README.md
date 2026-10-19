@@ -451,7 +451,33 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   **na urządzeniu** (1/2/3) z jedno-klikowym zapisem i odczytem
   (`/api/profile/file?name=profile_N`). **Eksport do pliku .json** (pobranie
   na komputer) i **import z pliku** (wgranie z powrotem). Przycisk
-  „Zastosuj" waliduje i zapisuje do aktywnej konfiguracji.
+  „Zastosuj" waliduje i zapisuje do aktywnej konfiguracji. Walidacja
+  (UI i serwer mają te same limity): zakres −40..85 °C, `ON ≤ OFF`,
+  minimalna szczelina (histereza) `OFF − ON ≥ 0,1 °C` (komunikat serwera
+  `hour N: gap<0.1`).
+  - **Pasek korekty** nad gridem (chowa się razem z zewiniętą kartą):
+    **Δ ±1 / ±0,25 °C** przesuwa wszystkie wartości profilu (zachowuje
+    relacje progów — wymagany tylko globalny clamp −40..85), wskaźnik
+    `Δ ±x,xx °C` (zielony/pomarańczowy).
+    **Szczelina ±0,05 °C** zmienia w każdym punkcie odstęp `OFF − ON`
+    o 0,05 °C, **ruszając wyłącznie temperaturą górną** (ON nietknięte):
+    powiększanie zatrzymuje się na **2,0 °C** (punkt przy limicie przestaje
+    rosnąć; gdy cały profil stoi na 2,0 → alert), a zmniejszanie na
+    **0,1 °C** (bez osobnej blokady — graniczne punkty przestają opadać;
+    gdy cały profil jest na 0,1 → alert). Powiększanie jest **zablokowane**
+    (alert z listą godzin), jeśli którykolwiek punkt ma szczelinę ≤ 0,1 °C.
+    Wskaźnik `Szczelina: ±x,xx °C` (niebieski) liczy naciśnięcia przycisku.
+    **↺ Oryginał** przywraca wartości ostatnio pobrane ze sterownika i zeruje
+    oba wskaźniki (korekty bez „Zastosuj" są operacją w przeglądarce —
+    ręczne edycje komórek nie wliczają się do wskaźników).
+  - **Bezpieczny zapis** — „Zastosuj" i zapis slotu wysyłają snapshot siatki
+    i **czyszczą flagę edycji dopiero po potwierdzeniu serwera**; odrzucenie
+    (np. naruszenie limitów) pokazuje komunikat serwera („Profil odrzucony:
+    hour N: …") i **zostawia wartości w siatce** — brak cichego powrotu do
+    poprzedniego stanu w trakcie POST (odświeżenie nie nadpisuje
+    edytowanego grida aż do potwierdzenia). Analogicznie wczytanie slotu
+    aktualizuje UI dopiero po sukcesie, a import z pliku (jak wcześniej)
+    ostrzega po odrzuceniu.
 - **Responsywność** — na urządzeniach mobilnych tabela czujników przewija się
   poziomo (nie wychodzi poza kartę), siatka kafelków dashboardu zwija się do
   2 kolumn, a wykresy dopasowują szerokość do ekranu.

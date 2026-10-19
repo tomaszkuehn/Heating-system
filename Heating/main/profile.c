@@ -38,10 +38,11 @@ bool profile_validate(const daily_profile_t *p, int *err_hour, char *err_msg, si
             if (err_msg) snprintf(err_msg, err_len, "hour %d: on>off", h);
             return false;
         }
-        /* Require a hysteresis gap of at least 0.2 degC. */
-        if (e->off_temp - e->on_temp < 0.2f) {
+        /* Require a hysteresis gap of at least 0.1 degC (UI Szczelina button
+         * floor — profile_validate must accept what the UI allows). */
+        if (e->off_temp - e->on_temp < 0.1f) {
             if (err_hour) *err_hour = h;
-            if (err_msg) snprintf(err_msg, err_len, "hour %d: gap<0.2", h);
+            if (err_msg) snprintf(err_msg, err_len, "hour %d: gap<0.1", h);
             return false;
         }
     }

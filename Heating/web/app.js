@@ -475,6 +475,7 @@ let profileEdited = false;
 /* Last server-loaded profile values (reset target for the shift toolbar). */
 let profileBaseline = null;
 let profileShift = 0;
+let profileGapDelta = 0;
 function renderProfile(p) {
   const g = $('profileGrid'); g.innerHTML = '';
   (p || []).forEach((h, idx) => {
@@ -487,7 +488,9 @@ function renderProfile(p) {
   });
   profileBaseline = (p || []).map(x => [+x[0], +x[1]]);
   profileShift = 0;
+  profileGapDelta = 0;
   updateProfileShiftBadge();
+  updateProfileGapBadge();
 }
 
 /* ---- Global profile shift ----
@@ -511,6 +514,63 @@ function profileShiftApply(delta) {
   profileEdited = true;
   profileShift = Math.round((profileShift + delta) * 100) / 100;
   updateProfileShiftBadge();
+}
+
+/* ---- Hysteresis-gap adjust (Szczelina +/−0,05) ----
+ * Uniformly changes OFF−ON in every hourly point by 0.05 °C by moving the
+ * UPPER temperature only (ON stays put). Widen blocks when any point has
+ * gap <= 0.1 °C (per spec) and never exceeds the 2.0 °C gap cap; shrink
+ * never goes below the 0.1 °C floor (points at the bound stop moving — no
+ * extra blocking rule). Empty/NaN cells are skipped. */
+function updateProfileGapBadge() {
+  const b = $('pGapBadge'); if (!b) return;
+  if (!profileGapDelta) { b.classList.add('hidden'); return; }
+  b.classList.remove('hidden');
+  b.textContent = 'Szczelina: ' + (profileGapDelta > 0 ? '+' : '') + profileGapDelta.toFixed(2) + ' °C';
+  b.style.color = '#60a5fa';
+}
+function profileGapAdjust(delta) {
+  const widen = delta > 0;
+  const byHour = {};
+  $('profileGrid').querySelectorAll('[data-h]').forEach(inp => {
+    (byHour[inp.dataset.h] = byHour[inp.dataset.h] || {})[inp.dataset.k] = inp;
+  });
+  const blocked = [], cur = {};
+  for (const h in byHour) {
+    const on = parseFloat(byHour[h].on.value), off = parseFloat(byHour[h].off.value);
+    if (isNaN(on) || isNaN(off)) continue;
+    const gap = Math.round((off - on) * 1000) / 1000;
+    cur[h] = [on, off, gap];
+    if (widen && gap <= 0.1 + 1e-9) blocked.push(h + ':00');
+  }
+  if (widen && blocked.length) {
+    alert('Odstęp 0,10 °C lub mniej w punktach: ' + blocked.join(', ') +
+          ' — powiększ go najpierw ręcznie przed korektą szczeliny.');
+    return;
+  }
+  const gaps = Object.values(cur).map(c => c[2]);
+  if (!gaps.length) return;
+  if (widen && Math.min(...gaps) >= 2.0 - 1e-9) {
+    alert('Maksymalny odstęp (2,0 °C) jest już osiągnięty w całym profilu.');
+    return;
+  }
+  if (!widen && Math.min(...gaps) <= 0.1 + 1e-9) {
+    alert('Minimalny odstęp (0,1 °C) jest już osiągnięty w całym profilu.');
+    return;
+  }
+  for (const h in cur) {
+    const [on, off, gap] = cur[h];
+    /* Shrink is allowed only while OFF >= ON + 0.1; points at (or below) the
+     * 0.1 °C floor are left untouched — never re-inflated. */
+    if (!widen && gap <= 0.1 + 1e-9) continue;
+    const newGap = widen ? Math.min(2.0, Math.round((gap + delta) * 1000) / 1000)
+                         : Math.max(0.1, Math.round((gap + delta) * 1000) / 1000);
+    if (newGap === gap) continue;
+    byHour[h].off.value = Math.round((on + newGap) * 1000) / 1000;
+  }
+  profileEdited = true;
+  profileGapDelta = Math.round((profileGapDelta + delta) * 1000) / 1000;
+  updateProfileGapBadge();
 }
 function collectProfile() {
   const arr = [];
@@ -1241,12 +1301,24 @@ $('btnNotifyTest').onclick = async () => {
 $('btnNotifyEv').onclick = () => post('/api/notify/events', { faults: $('nEvFaults').checked, restart: $('nEvRestart').checked }, true).then(() => refresh());
 $('btnSimHeat').onclick = () => post('/api/sim/heating', { enabled: $('simHeat').checked, mixed: $('simMixed').checked, accel: $('simAccel').checked, mode: +$('simMode').value, heat_rate: +$('simHR').value, cool_rate: +$('simCR').value, inertia: +$('simIn').value }, true).then(() => refresh()).then(load24h);
 $('btnSimSen').onclick = () => post('/api/sim/sensor?id=' + $('simSenId').value, { src: +$('simSenSrc').value, base: +$('simSenBase').value, rate: 0.1, target: 0 }, true).then(() => refresh()).then(load24h);
-$('btnProfileApply').onclick = () => { profileEdited = false; post('/api/profile', collectProfile(), true).then(() => refresh()); };
+/* Zastosuj: capture the grid FIRST, keep profileEdited while the POST is in
+ * flight (so a stale render can't overwrite the edits), and only clear the
+ * flag + refresh after the server CONFIRMS. On rejection show the server's
+ * reason and keep the user's values in the grid — no silent revert. */
+$('btnProfileApply').onclick = () => {
+  const data = collectProfile();
+  post('/api/profile', data, true).then(r => {
+    if (r === 'ok') { profileEdited = false; refresh(); }
+    else alert('Profil odrzucony: ' + (typeof r === 'string' ? r : 'serwer zwrócił błąd'));
+  });
+};
 /* Global profile shift toolbar (+/-1 / +/-0.25, badge, restore-from-server). */
 $('pShiftM1').onclick    = () => profileShiftApply(-1);
 $('pShiftM025').onclick  = () => profileShiftApply(-0.25);
 $('pShiftP025').onclick  = () => profileShiftApply(0.25);
 $('pShiftP1').onclick    = () => profileShiftApply(1);
+$('pGapP05').onclick     = () => profileGapAdjust(0.05);
+$('pGapM05').onclick     = () => profileGapAdjust(-0.05);
 $('pShiftReset').onclick = () => {
   if (!profileBaseline) return;
   renderProfile(profileBaseline.map(x => x.slice()));
@@ -1256,19 +1328,19 @@ $('pShiftReset').onclick = () => {
 document.querySelectorAll('.pslot-save').forEach(btn => {
   btn.onclick = () => {
     const slot = btn.dataset.slot;
-    profileEdited = false;
-    post('/api/profile/file?name=profile_' + slot + '&op=save', collectProfile(), true)
-      .then(r => { if (r === 'ok') btn.style.background = '#22c55e'; setTimeout(() => { btn.style.background = '#444'; }, 600); })
-      .catch(() => {});
+    const data = collectProfile();  /* capture before the POST races a render */
+    post('/api/profile/file?name=profile_' + slot + '&op=save', data, true)
+      .then(r => {
+        if (r === 'ok') { btn.style.background = '#22c55e'; setTimeout(() => { btn.style.background = '#444'; }, 600); }
+        else alert('Zapis slotu odrzucony: ' + (typeof r === 'string' ? r : 'serwer zwrócił błąd'));
+      });
   };
 });
 document.querySelectorAll('.pslot-load').forEach(btn => {
   btn.onclick = () => {
     const slot = btn.dataset.slot;
-    profileEdited = false;
     post('/api/profile/file?name=profile_' + slot + '&op=load', '')
-      .then(r => { if (r === 'ok') refresh(); else alert('Brak profilu ' + slot); })
-      .catch(() => {});
+      .then(r => { if (r === 'ok') { profileEdited = false; refresh(); } else alert('Brak profilu ' + slot); });
   };
 });
 
