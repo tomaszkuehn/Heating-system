@@ -462,11 +462,10 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
     **Szczelina ±0,05 °C** zmienia w każdym punkcie odstęp `OFF − ON`
     o 0,05 °C, **ruszając wyłącznie temperaturą górną** (ON nietknięte):
     powiększanie zatrzymuje się na **2,0 °C** (punkt przy limicie przestaje
-    rosnąć; gdy cały profil stoi na 2,0 → alert), a zmniejszanie na
-    **0,1 °C** (bez osobnej blokady — graniczne punkty przestają opadać;
-    gdy cały profil jest na 0,1 → alert). Powiększanie jest **zablokowane**
-    (alert z listą godzin), jeśli którykolwiek punkt ma szczelinę ≤ 0,1 °C.
-    Wskaźnik `Szczelina: ±x,xx °C` (niebieski) liczy naciśnięcia przycisku.
+    rosnąć; możliwe także ze szczeliny 0,1 °C — 0,1 → 0,15), a zmniejszanie
+    na **0,1 °C** (bez osobnych blokad — graniczne punkty przestają się
+    zmieniać; gdy cały profil stoi na granicy → alert). Wskaźnik
+    `Szczelina: ±x,xx °C` (niebieski) liczy naciśnięcia przycisku.
     **↺ Oryginał** przywraca wartości ostatnio pobrane ze sterownika i zeruje
     oba wskaźniki (korekty bez „Zastosuj" są operacją w przeglądarce —
     ręczne edycje komórek nie wliczają się do wskaźników).
@@ -553,6 +552,27 @@ godzinę"). Dlatego limity mają też górne granice: `max_on_sec`,
 emergency 0–86400 s z `on ≤ period`; poza zakresem → wartość domyślna. Repair
 działa na kopii w RAM przy starcie (NVS zostaje nietknięty, naprawiany
 deterministycznie co boot).
+
+### Watchdogi i nadzór systemowy (sdkconfig.defaults)
+
+Cztery niezależne warstwy wykrywania awarii — każda z inną odpowiedzią:
+
+| Warstwa | Parametr | Reakcja |
+|---|---|---|
+| **Panic handler** | `ESP_SYSTEM_PANIC_PRINT_REBOOT` | exception / abort → wydruk + **restart** |
+| **Interrupt WDT** | `ESP_INT_WDT=300 ms` (CPU0+CPU1) | zablokowane przerwania → panic → restart |
+| **Task WDT** | `ESP_TASK_WDT`, 10 s | **`ESP_TASK_WDT_PANIC=y`** → zawieszenie taska → **twardy restart** (nie tylko ostrzeżenie) |
+| **Brownout** | `ESP_BROWNOUT_DET` (lvl 0) | zanik zasilania → sprzętowy reset |
+
+Task WDT pilnuje tasków **idle na obu rdzeniach** (auto) oraz `control_task`
+(`esp_task_wdt_add`, main.c). Tryb panic to świadomy wybór dla sterownika CO:
+zamrożony task (np. deadlock na blokadzie konfiguracji) bez niego tylko
+wypisywałby ostrzeżenia — urządzenie stałoby z przekaźnikiem w stanie ON.
+Reboot jest bezpieczny: konfiguracja przeżywa w NVS, profil jest walidowany
+przy starcie, grzanie startuje od stanu IDLE z histerezą, a rollback OTA ma
+nadal swoje 3-minutowe okno. Z blokad TWDT celowo **nie** są subskrybowane
+taski sieciowe (worker HTTP powiadamień blokuje się na SMTP/SMS do 30 s —
+patrz `notification_manager.c`), więc wolny serwer poczty nie wymusza restartu.
 
 **Karencja awarii:** parametr zastąpił stałą `s_grace_ms = 300000` w
 `fault_manager.c` — `fault_manager_observe()` pobiera go z `s_cfg->fault_grace_sec`

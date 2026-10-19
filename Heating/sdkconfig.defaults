@@ -13,6 +13,11 @@ CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y
 CONFIG_ESP_TASK_WDT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 CONFIG_ESP_TASK_WDT_EN=y
+# A hung task (e.g. deadlock on the config lock) must HARD RESET the device,
+# not just warn: config survived in NVS and heating restarts safe-side (IDLE),
+# while a frozen controller could leave the relay stuck ON. Idle tasks are
+# watched too, so a priority task starving idle also resets.
+CONFIG_ESP_TASK_WDT_PANIC=y
 
 # --- WiFi ---
 CONFIG_ESP_WIFI_ENABLED=y

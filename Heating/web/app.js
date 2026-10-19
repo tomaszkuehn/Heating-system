@@ -518,10 +518,11 @@ function profileShiftApply(delta) {
 
 /* ---- Hysteresis-gap adjust (Szczelina +/−0,05) ----
  * Uniformly changes OFF−ON in every hourly point by 0.05 °C by moving the
- * UPPER temperature only (ON stays put). Widen blocks when any point has
- * gap <= 0.1 °C (per spec) and never exceeds the 2.0 °C gap cap; shrink
- * never goes below the 0.1 °C floor (points at the bound stop moving — no
- * extra blocking rule). Empty/NaN cells are skipped. */
+ * UPPER temperature only (ON stays put). Widen never exceeds the 2.0 °C gap
+ * cap, shrink never goes below the 0.1 °C floor — a point at its bound just
+ * stops moving (no extra blocking rules; widening from a 0.1 °C gap is
+ * allowed). Shrink leaves sub-0.1 °C points untouched — never re-inflated.
+ * Empty/NaN cells are skipped. */
 function updateProfileGapBadge() {
   const b = $('pGapBadge'); if (!b) return;
   if (!profileGapDelta) { b.classList.add('hidden'); return; }
@@ -535,18 +536,11 @@ function profileGapAdjust(delta) {
   $('profileGrid').querySelectorAll('[data-h]').forEach(inp => {
     (byHour[inp.dataset.h] = byHour[inp.dataset.h] || {})[inp.dataset.k] = inp;
   });
-  const blocked = [], cur = {};
+  const cur = {};
   for (const h in byHour) {
     const on = parseFloat(byHour[h].on.value), off = parseFloat(byHour[h].off.value);
     if (isNaN(on) || isNaN(off)) continue;
-    const gap = Math.round((off - on) * 1000) / 1000;
-    cur[h] = [on, off, gap];
-    if (widen && gap <= 0.1 + 1e-9) blocked.push(h + ':00');
-  }
-  if (widen && blocked.length) {
-    alert('Odstęp 0,10 °C lub mniej w punktach: ' + blocked.join(', ') +
-          ' — powiększ go najpierw ręcznie przed korektą szczeliny.');
-    return;
+    cur[h] = [on, off, Math.round((off - on) * 1000) / 1000];
   }
   const gaps = Object.values(cur).map(c => c[2]);
   if (!gaps.length) return;
