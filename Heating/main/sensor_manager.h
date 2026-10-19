@@ -36,6 +36,13 @@ float sensor_manager_system_temp(void);
  * never drives the control decision. */
 float sensor_manager_control_any_temp(void);
 
+/* ---- Daily-history helper (12-month energy chart) ----
+ * Weighted mean over ONE minute sample's per-sensor values, restricted to the
+ * sensors that CONTROL the heating (ctrl_mask; 0 = all internal sensors).
+ * vals[i] is the sample's per_sensor[i] in the same order as the bound sensor
+ * table; NaN entries are ignored. NAN when no control sensor has a value. */
+float sensor_manager_ctrl_minute_avg(const float *vals, int n);
+
 /* Apply the persisted control/window policy (called by web_ui_api/main after
  * loading or changing the config): mask semantics as above; ignore_sec is the
  * minimum time a window-detected sensor stays excluded (0 = immediate). */

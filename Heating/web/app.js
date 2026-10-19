@@ -970,7 +970,9 @@ function render24(cv, rows, profile, sensors) {
       legend.push([label, col]);
     });
     plot(d => d[2], '#22c55e', 1.4); legend.push(['zewn.', '#22c55e']);
-    plot(d => d[1], '#3b82f6', 1.8); legend.push(['system', '#3b82f6']);
+    if (showSystem) {
+      plot(d => d[1], '#3b82f6', 1.8); legend.push(['system', '#3b82f6']);
+    }
   }
   legend.push(['profil ON/OFF', '#f59e0b']);
 
@@ -1181,6 +1183,7 @@ function padDailyTo365(raw) {
 /* ---- zoom + sensor toggles ---- */
 let chartZoomH = 24;
 let visibleSensors = new Set();
+let showSystem = true;   /* 24h chart: visibility of the system-average line */
 
 function populateSensorToggles(sensors) {
   const div = $('sensorToggles'); if (!div) return;
@@ -1198,6 +1201,12 @@ function populateSensorToggles(sensors) {
     };
     div.appendChild(lb);
   });
+  /* Toggle for the thick blue system-average line (last in the row). */
+  const lb = document.createElement('label');
+  lb.style.cssText = 'font-size:12px;margin:0;cursor:pointer;display:inline-flex;align-items:center;gap:4px;color:#3b82f6';
+  lb.innerHTML = '<input type="checkbox" ' + (showSystem ? 'checked' : '') + '><span style="display:inline-block;width:10px;height:10px;background:#3b82f6;border-radius:2px"></span><span>system</span>';
+  lb.querySelector('input').onchange = function () { showSystem = this.checked; draw24h(); };
+  div.appendChild(lb);
 }
 
 /* ---- wiring ---- */

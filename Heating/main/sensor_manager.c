@@ -558,6 +558,30 @@ float sensor_manager_system_temp(void)
     return vsum / wsum;
 }
 
+/* Weighted mean over one minute sample restricted to the sensors that CONTROL
+ * the heating (mask semantics as in sensor_manager_control_any_temp). The
+ * sample already stores NaN for sensors without an accepted reading at record
+ * time; weight and mask come from the CURRENT config. Storage computes the
+ * daily `daily.csv` system column for the 12-month chart from this, so the
+ * plotted long-term average follows the control set, not all sensors. */
+float sensor_manager_ctrl_minute_avg(const float *vals, int n)
+{
+    if (!vals || !s_sensors) return he_nan();
+    float wsum = 0, vsum = 0;
+    for (int i = 0; i < n && i < s_count; i++) {
+        const sensor_t *s = &s_sensors[i];
+        if (!s->active) continue;
+        if (he_isnan(vals[i])) continue;
+        /* bit (id-1) participates; mask 0 = all internal sensors qualify. */
+        if (s_ctrl_mask &&
+            !(s_ctrl_mask & (uint8_t)(1u << ((s->id - 1) & 7u)))) continue;
+        wsum += s->weight;
+        vsum += s->weight * vals[i];
+    }
+    if (wsum <= 0) return he_nan();
+    return vsum / wsum;
+}
+
 /* Control-temperature for CTRL_MODE_ANY: coldest among the user-selected
  * sensors. A sensor qualifies when it is active, quality-OK (or simulated),
  * has a reading, and its id bit is set in s_ctrl_mask (0 = all internal

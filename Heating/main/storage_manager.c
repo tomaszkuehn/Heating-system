@@ -15,6 +15,7 @@
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "sensor_manager.h"
 
 static const char *TAG = "storage";
 
@@ -453,13 +454,19 @@ static void aggregate_day(int key)
     double sum_sys = 0, sum_ext = 0;
     int n = 0, ext_n = 0, heat_mins = 0;
 
-    /* Scan the ring buffer for samples belonging to the target day. */
+    /* Scan the ring buffer for samples belonging to the target day. The
+     * daily "system" column is the weighted mean of the sensors that CONTROL
+     * the heating (ctrl_mask; 0 = all), recomputed per sample from the stored
+     * per-sensor values — NOT the all-sensors system average. Rows written by
+     * older firmware keep the previous all-sensors semantics. */
     int start = (s_ring_count < HE_RING_SIZE) ? 0 : s_ring_head;
     for (int i = 0; i < s_ring_count; i++) {
         int idx = (start + i) % HE_RING_SIZE;
         if (day_key_from_ts(s_ring[idx].ts) != key) continue;
-        if (he_isnan(s_ring[idx].system_temp)) continue;
-        sum_sys += s_ring[idx].system_temp;
+        float ctl = sensor_manager_ctrl_minute_avg(s_ring[idx].per_sensor,
+                                                   HE_MAX_SENSORS);
+        if (he_isnan(ctl)) continue;   /* minute without control-set data */
+        sum_sys += ctl;
         n++;
         if (s_ring[idx].heating_active) heat_mins++;
         if (!he_isnan(s_ring[idx].external_temp)) {
@@ -647,8 +654,10 @@ bool storage_read_daily_current(minute_sample_t *out, int *out_key)
     for (int i = 0; i < s_ring_count; i++) {
         int idx = (start + i) % HE_RING_SIZE;
         if (day_key_from_ts(s_ring[idx].ts) != today) continue;
-        if (he_isnan(s_ring[idx].system_temp)) continue;
-        sum_sys += s_ring[idx].system_temp;
+        float ctl = sensor_manager_ctrl_minute_avg(s_ring[idx].per_sensor,
+                                                   HE_MAX_SENSORS);
+        if (he_isnan(ctl)) continue;   /* minute without control-set data */
+        sum_sys += ctl;
         n++;
         if (s_ring[idx].heating_active) heat_mins++;
         if (!he_isnan(s_ring[idx].external_temp)) {

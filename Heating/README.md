@@ -324,7 +324,11 @@ plików**. Mechanizmy (w `storage_manager.c`):
    posortowany. **Bieżący dzień** nie czeka na agregację przy rolloverze —
    endpoint `/api/daily` dokleja go w czasie rzeczywistym z bufora RAM
    (`storage_read_daily_current()`), więc wykres energii pokazuje najświeższy
-   słupek bez czekania na północ.
+   słupek bez czekania na północ). Kolumna temperatury w wierszu dziennym to
+   od chwili wprowadzenia tej funkcji **średnia ważona zbioru sterującego**
+   (`sensor_manager_ctrl_minute_avg()` — per-minuta z `per_sensor[]` wg maski
+   `ctrl_mask`, 0 = wszystkie poprawne), a nie średnia wszystkich czujników;
+   wiersze sprzed zmiany zachowują starą semantykę.
 3. **Log zdarzeń w RAM.** Dziennik zdarzeń (restart, awarie) jest trzymany w
    **buforze pierścieniowym w RAM** (`HE_LOG_MAX_ENTRIES = 100` wpisów), a nie
    w pliku na LittleFS — eliminuje to całkowicie zapis flash przy logowaniu
@@ -386,6 +390,8 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   Etykieta to **pierwsze 12 znaków nazwy** (pełna nazwa w dymku `title`);
   po zmianie nazwy czujnika i „Zapisz" lista przebudowuje się w ramach
   pełnego odświeżenia strony — nowa nazwa natychmiast widoczna nad wykresem.
+  Na końcu tej samej listy checkbox **system** (niebieski) pokazuje/ukrywa
+  linię średniej systemowej; linia zewnętrzna (zielona) jest rysowana zawsze.
 - **Celownik (crosshair) na wykresie 24 h** — najechanie kursorem na pole
   wykresu rysuje dwie przerywane linie: pionową i poziomą. Na górze pionowej
   pokazywany jest wskazywany czas (HH:MM), po prawej poziomej — temperatura
@@ -415,7 +421,12 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
   Zmiana ID istniejącego węzła nie jest możliwa z UI (wymaga resetu BOOT na
   węźle i ponownego parowania).
 - **Wykres zużycia energii (365 dni)** — słupki **minut grzania na dobę**
-  (pomarańczowe) z nałożoną linią średniej temperatury systemowej (niebieska).
+  (pomarańczowe) z nałożoną linią **średniej temperatury zbioru sterującego**
+  (niebieska) — średnia ważona liczona wyłącznie z czujników z zaznaczonym
+  „Steruje" w tabeli czujników (brak zaznaczonych = wszystkie poprawne).
+  Uwaga: wiersze `daily.csv` zapisane przed tą zmianą trzymają jeszcze
+  średnią wszystkich czujników — nowe znaczenie ma dzień bieżący (agregat
+  na żywo) i wszystkie kolejne.
   Każdy słupek to jeden dzień; oś X to stałe okno **365 dni** kończące się
   dzisiaj. Dane pochodzą z `daily.csv` (kolumna `heat_mins`) uzupełnione o
   **bieżący dzień w czasie rzeczywistym** (agregat z bufora RAM, widoczny jako
