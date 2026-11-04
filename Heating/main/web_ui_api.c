@@ -986,7 +986,10 @@ static esp_err_t h_fault_clear(httpd_req_t *req)
 /* ---- /api/limits (POST) ---- */
 static esp_err_t h_limits(httpd_req_t *req)
 {
-    char body[256]; read_body(req, body, sizeof(body));
+    /* The dashboard sends ALL limit fields in one JSON (13 keys ≈ 300+ bytes
+     * with typical values) — 256 bytes truncated the tail and silently
+     * dropped sensor_recover_sec / sensor_em_hold_min saves. */
+    char body[512]; read_body(req, body, sizeof(body));
     int v;
     CFG_LOCK();
     if (json_int(body, "fault_grace_sec", &v) && v >= 60 && v <= 3600)
