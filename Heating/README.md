@@ -791,6 +791,13 @@ priorytecie wykrycia).
   (nie po pierwszej ramce — koniec flappingu); latch awaryjny zwalnia się gdy
   min-stay minął. Ręczne „Wyczyść awarię" z UI kasuje awarię natychmiast i
   anuluje również zawias.
+- **Kredyt ciszy (flapping):** licznik ciszy **akumuluje się ponad przerwy** —
+  ulotny powrót danych (pojedyncza ramka / kilkuminotny skok) **nie kasuje**
+  policzonej ciszy (jest tylko zamrożony), bo zaufanie wymaga ciągłych
+  `sensor_recover_sec` OK. Dzięki temu przy łączu migającym ramkami
+  co kilka minut tryb awaryjny i tak na pewno wejdzie po upływie
+  `data_hold + down_grace` łącznej ciszy, **niezależnie od ostatnio
+  wskazywanej temperatury**.
 - **Pochodzenie flappingu (przed cfg v4):** warunek `healthy==0` podnosił
   awarię na pierwszym ticku, a auto-clear na pierwszej ramce — przerwy
   od minut włączały tryb awaryjny co chwilę.

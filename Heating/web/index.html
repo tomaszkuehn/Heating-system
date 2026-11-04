@@ -222,7 +222,7 @@
     <div class="grid3">
       <label>Steruj wg ostatniego pomiaru (s)<input type="number" id="limHold" class="inp" min="0" max="86400" title="Data-hold: czas od ostatniego dobrego pomiaru, przez który sterowanie używa ostatniej wartości zamiast zgłaszać awarię"></label>
       <label>Cisza do awarii (s)<input type="number" id="limDownGrace" class="inp" min="0" max="86400" title="Grace po wygaśnięciu data-hold, zanim zgłoszona zostanie awaria czujników (przez ten czas bezpieczne wyłączenie)"></label>
-      <label>Zaufanie przy powrocie (s)<input type="number" id="limRecover" class="inp" min="0" max="86400" title="Czas ciągłych poprawnych danych zanim automatycznie wyczyści się awaria"></label>
+      <label>Zaufanie przy powrocie (s)<input type="number" id="limRecover" class="inp" min="0" max="86400" title="Czas ciągłych poprawnych danych zanim automatycznie wyczyści się awaria; pojedyncze ramki przy migotającym łączu nie kasują licznika ciszy (awaryjne wejdzie mimo ulotnych powrotów)"></label>
     </div>
     <label>Min. czas w trybie awaryjnym (min)<input type="number" id="limEmHold" class="inp" min="0" max="1440" title="Po wejściu w tryb awaryjny (awaria czujników) urządzenie pozostaje w nim najmniej tyle minut"></label>
     <label style="margin-top:8px"><input type="checkbox" id="limIgnoreRise"> <b style="color:#f59e0b">ignoruj brak/słaby wzrost temperatury</b> (nie zgłaszaj NO/LOW_HEAT_RISE — grzanie nigdy nie staje z tego powodu)</label>

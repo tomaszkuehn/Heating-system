@@ -35,10 +35,12 @@ static float s_learned_rate = 0.5f;   /* degC per minute, EMA over good cycles *
  * A LoRa link with minutes-long gaps would previously trip FAULT_SENSOR_IFACE
  * on the first unhealthy tick (control had NO debounce) and clear it on the
  * first good one — engaging the cyclic emergency over and over. Now:
- *  - raise only after hold+grace seconds of continuous all-sensors-down
+ *  - raise only after hold+grace seconds of accumulated all-sensors-down
  *    (hold = the deliberate control-side stale-data window, grace = extra
- *    silent-OFF margin; both from system_config_t, 0 disables each part),
- *  - auto-clear only after `sensor_recover_sec` of CONTINUOUS good data. */
+ *    silent-OFF margin; both from system_config_t, 0 disables each part).
+ *    The credit ACCUMULATES across flaps: a brief data burst does not reset
+ *    it — only a continuous recovery of sensor_recover_sec does,
+ *  - auto-clear only after that same continuous recovery window. */
 static uint32_t s_down_ms = 0;   /* continuous all-internal-sensors-down  */
 static uint32_t s_ok_ms = 0;     /* continuous at-least-one-healthy       */
 
@@ -146,13 +148,16 @@ void fault_manager_observe(const fault_context_t *ctx)
         }
     } else {
         if (ctx->healthy_sensors > 0) s_ok_ms += (uint32_t)ctx->dt_ms; else s_ok_ms = 0;
-        s_down_ms = 0;
-        /* Clear the sensor-interface fault only after a continuous recovery,
-         * not on the first good tick — mirrors the raise-side grace and stops
-         * a flickering link from toggling emergency mode. */
-        if (s_fault == FAULT_SENSOR_IFACE && ctx->healthy_sensors > 0) {
-            int rec = (s_cfg && s_cfg->sensor_recover_sec > 0) ? s_cfg->sensor_recover_sec : 300;
-            if (s_ok_ms >= rec * 1000u) {
+        /* IMPORTANT: a single frame / short data burst does NOT clear the
+         * silence credit (s_down_ms is frozen, not reset while data trickles
+         * in). Only a CONTINUOUS recovery period (sensor_recover_sec) proves
+         * the link back — otherwise a flapping link (e.g. one frame every few
+         * minutes) would reset the clock forever and the anti-freeze
+         * emergency could never engage no matter how bad the link got. */
+        int rec = (s_cfg && s_cfg->sensor_recover_sec > 0) ? s_cfg->sensor_recover_sec : 300;
+        if (s_ok_ms >= rec * 1000u) {
+            s_down_ms = 0;
+            if (s_fault == FAULT_SENSOR_IFACE) {
                 fault_manager_clear();
                 s_ok_ms = 0;
             }
@@ -205,7 +210,7 @@ void fault_manager_observe(const fault_context_t *ctx)
 
     /* --- Network fault (informational, does not block control) --- */
     if (!ctx->network_up && s_fault == FAULT_NONE) {
-        raise_fault(FAULT_NETWORK, "Wi-Fi network unavailable");
+        raise_fault(FAULT_NETWORK, "network unavailable");
         return;
     }
 
@@ -213,10 +218,12 @@ void fault_manager_observe(const fault_context_t *ctx)
     if (ctx->network_up && s_fault == FAULT_NETWORK) {
         fault_manager_clear();
     }
-    /* Clear sensor-interface fault when at least one sensor recovers. */
-    if (s_fault == FAULT_SENSOR_IFACE && ctx->healthy_sensors > 0) {
-        fault_manager_clear();
-    }
+    /* (The historical instant auto-clear for FAULT_SENSOR_IFACE
+     * (`healthy > 0 -> clear immediately`) was REMOVED — it bypassed the
+     * recover gate above and re-introduced flapping: with a flickering link
+     * every single returned frame re-armed the cycle. The ONLY paths out of
+     * FAULT_SENSOR_IFACE are now: a continuous `sensor_recover_sec` of good
+     * data (gate in the else-branch), or the manual "Wyczyść awarię" (UI/API).) */
     /* Clear heating faults when heating becomes effective again. */
     if ((s_fault == FAULT_NO_HEAT_RISE || s_fault == FAULT_LOW_HEAT_RISE) &&
         ctx->heating_active && !he_isnan(ctx->system_temp) && !he_isnan(s_heat_start_temp)) {
