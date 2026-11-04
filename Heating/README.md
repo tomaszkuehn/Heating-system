@@ -798,6 +798,24 @@ priorytecie wykrycia).
   co kilka minut tryb awaryjny i tak na pewno wejdzie po upływie
   `data_hold + down_grace` łącznej ciszy, **niezależnie od ostatnio
   wskazywanej temperatury**.
+- **Ile ramek wystarcza do auto-kasowania:** pojedyncza ramka otwiera okno
+  zdrowia trwające pełne `HE_SENSOR_TIMEOUT_SEC` (90 s) — dlatego
+  `sensor_recover_sec ≤ ~90` oznacza „jedna ramka kasuje awarię" (okno
+  zdrowia pokrywa próg), a większe wartości wymagają kolejnych ramek
+  w odstępach < 90 s. Przy `recover=10` każda pojedyncza ramka czyści
+  awarię i **zeruje kredyt ciszy do pełna** — świadome złagodzenie
+  ochrony anti-flap.
+- **Rzadkie taktowanie (lock-in w trybie awaryjnym):** przy łączu
+  z ramkami co wiele minut (np. 30) każda cisza
+  `90 s + data_hold + down_grace` podnosi awarię nieco **przed** następną
+  ramkę, a zawias `sensor_em_hold_min` łączy kolejne cykle bez pauzy —
+  system pozostaje wtedy niemal na stałe w `EMERGENCY_CYCLIC` (duty cycle,
+  pomiarów nie widać; świeża ramka tylko wypełnia próg recover). Aby
+  między ramkami wracała normalna hystereza (nie grzało przy temp.
+  powyżej progu), ustaw zawias **krótszy** niż odstęp do ponownej awarii
+  (przy hold 900 s + grace 600 s: `sensor_em_hold_min ≤ ~28`), albo
+  zwiększ taktowanie ramki. Kasowanie ręczne „Wyczyść awarię" działa
+  zawsze.
 - **Pochodzenie flappingu (przed cfg v4):** warunek `healthy==0` podnosił
   awarię na pierwszym ticku, a auto-clear na pierwszej ramce — przerwy
   od minut włączały tryb awaryjny co chwilę.
