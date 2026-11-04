@@ -187,6 +187,8 @@ typedef struct {
     control_mode_t  control_mode;         /* AVG / ANY                          */
     float           external_temp;        /* outdoor temp, or NAN             */
     fault_class_t   active_fault;
+    bool            hold_active;          /* anti-flap: steering on stale data */
+    int             hold_age_s;           /* age of that steering data (s, 0)   */
     uint32_t        uptime_ms;
     bool            simulation_mode;      /* any simulation active            */
 } system_snapshot_t;

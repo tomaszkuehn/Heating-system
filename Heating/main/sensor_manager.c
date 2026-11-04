@@ -582,6 +582,41 @@ float sensor_manager_ctrl_minute_avg(const float *vals, int n)
     return vsum / wsum;
 }
 
+/* Control temperature from STALE data (data-hold window, see header). Same
+ * selection and weighting as the live control temperature, but quality is
+ * deliberately ignored — a link gap is exactly when TIMEOUT/STALE is all we
+ * have — and readings older than the hold window do not qualify. */
+float sensor_manager_control_hold_temp(bool coldest, int hold_sec, int *age_ms)
+{
+    if (age_ms) *age_ms = -1;
+    if (!s_sensors || hold_sec <= 0 || s_count <= 0) return he_nan();
+    uint32_t now = mono_ms();
+    float wsum = 0, vsum = 0, best = he_nan();
+    int worst_age_ms = -1;
+    for (int i = 0; i < s_count; i++) {
+        sensor_t *s = &s_sensors[i];
+        if (!s->active || he_isnan(s->last_effective)) continue;
+        /* bit (id-1) participates in control; mask 0 = all internal sensors. */
+        if (s_ctrl_mask &&
+            !(s_ctrl_mask & (uint8_t)(1u << ((s->id - 1) & 7u)))) continue;
+        int age = (int)(now - s->last_update_ms);
+        if (age < 0) age = 0;
+        if (age > hold_sec * 1000) continue;
+        if (age > worst_age_ms) worst_age_ms = age;
+        if (coldest) {
+            if (he_isnan(best) || s->last_effective < best)
+                best = s->last_effective;
+        } else {
+            wsum += s->weight;
+            vsum += s->weight * s->last_effective;
+        }
+    }
+    if (age_ms) *age_ms = worst_age_ms;
+    if (coldest) return he_isnan(best) ? he_nan() : best;
+    if (wsum <= 0) return he_nan();
+    return vsum / wsum;
+}
+
 /* Control-temperature for CTRL_MODE_ANY: coldest among the user-selected
  * sensors. A sensor qualifies when it is active, quality-OK (or simulated),
  * has a reading, and its id bit is set in s_ctrl_mask (0 = all internal

@@ -31,6 +31,17 @@ static int64_t s_heat_start_us;
 static bool s_heating_was_active = false;
 static float s_learned_rate = 0.5f;   /* degC per minute, EMA over good cycles */
 
+/* --- Anti-flap timing for the sensor-interface fault (cfg v4) ---
+ * A LoRa link with minutes-long gaps would previously trip FAULT_SENSOR_IFACE
+ * on the first unhealthy tick (control had NO debounce) and clear it on the
+ * first good one — engaging the cyclic emergency over and over. Now:
+ *  - raise only after hold+grace seconds of continuous all-sensors-down
+ *    (hold = the deliberate control-side stale-data window, grace = extra
+ *    silent-OFF margin; both from system_config_t, 0 disables each part),
+ *  - auto-clear only after `sensor_recover_sec` of CONTINUOUS good data. */
+static uint32_t s_down_ms = 0;   /* continuous all-internal-sensors-down  */
+static uint32_t s_ok_ms = 0;     /* continuous at-least-one-healthy       */
+
 void fault_manager_init(void)
 {
     s_fault = FAULT_NONE;
@@ -117,10 +128,35 @@ void fault_manager_observe(const fault_context_t *ctx)
         s_heating_was_active = false;
     }
 
-    /* --- Sensor / interface faults --- */
+    /* --- Sensor / interface faults (anti-flap: see the timing block above) --- */
     if (ctx->total_sensors > 0 && ctx->healthy_sensors == 0) {
-        raise_fault(FAULT_SENSOR_IFACE, "all sensors unavailable");
-        return;
+        s_ok_ms = 0;
+        if (s_fault != FAULT_SENSOR_IFACE) {
+            s_down_ms += (uint32_t)ctx->dt_ms;
+            int hold = (s_cfg && s_cfg->sensor_data_hold_sec > 0) ? s_cfg->sensor_data_hold_sec : 0;
+            int grace = (s_cfg && s_cfg->sensor_down_grace_sec > 0) ? s_cfg->sensor_down_grace_sec : 900;
+            if (s_down_ms >= (hold + grace) * 1000u) {
+                raise_fault(FAULT_SENSOR_IFACE, "all sensors unavailable");
+                s_down_ms = 0;
+                return;   /* control drops to emergency/ST_FAULT from the next tick */
+            }
+            /* Silence shorter than hold+grace: no fault yet — the control
+             * engine serves the stale-data hold (then relay-OFF) this whole
+             * window. No early return: storage/network checks stay live. */
+        }
+    } else {
+        if (ctx->healthy_sensors > 0) s_ok_ms += (uint32_t)ctx->dt_ms; else s_ok_ms = 0;
+        s_down_ms = 0;
+        /* Clear the sensor-interface fault only after a continuous recovery,
+         * not on the first good tick — mirrors the raise-side grace and stops
+         * a flickering link from toggling emergency mode. */
+        if (s_fault == FAULT_SENSOR_IFACE && ctx->healthy_sensors > 0) {
+            int rec = (s_cfg && s_cfg->sensor_recover_sec > 0) ? s_cfg->sensor_recover_sec : 300;
+            if (s_ok_ms >= rec * 1000u) {
+                fault_manager_clear();
+                s_ok_ms = 0;
+            }
+        }
     }
 
     /* --- Storage fault --- */

@@ -124,6 +124,7 @@
       </div>
       <div id="sensorToggles" style="display:flex;align-items:center;flex-wrap:wrap"></div>
     </div>
+    <div id="holdBanner" class="hidden" style="margin:0 0 8px 0;padding:6px 10px;border-radius:6px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.45);color:#f59e0b;font-size:13px;font-weight:600"></div>
     <canvas id="chart24" height="220"></canvas>
     <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;justify-content:space-between">
       <h2 style="margin:0">Zużycie energii (minuty grzania) — 12 miesięcy (słupki) + śr. systemowa (linia)</h2>
@@ -217,6 +218,13 @@
       </label>
       <label>Czujnik ignorowany po spadku (s)<input type="number" id="limWinIg" class="inp" min="0" max="3600"></label>
     </div>
+    <h3 style="margin:10px 0 4px">Ochrona przy przerwach w danych (łańcuch LoRa)</h3>
+    <div class="grid3">
+      <label>Steruj wg ostatniego pomiaru (s)<input type="number" id="limHold" class="inp" min="0" max="86400" title="Data-hold: czas od ostatniego dobrego pomiaru, przez który sterowanie używa ostatniej wartości zamiast zgłaszać awarię"></label>
+      <label>Cisza do awarii (s)<input type="number" id="limDownGrace" class="inp" min="0" max="86400" title="Grace po wygaśnięciu data-hold, zanim zgłoszona zostanie awaria czujników (przez ten czas bezpieczne wyłączenie)"></label>
+      <label>Zaufanie przy powrocie (s)<input type="number" id="limRecover" class="inp" min="0" max="86400" title="Czas ciągłych poprawnych danych zanim automatycznie wyczyści się awaria"></label>
+    </div>
+    <label>Min. czas w trybie awaryjnym (min)<input type="number" id="limEmHold" class="inp" min="0" max="1440" title="Po wejściu w tryb awaryjny (awaria czujników) urządzenie pozostaje w nim najmniej tyle minut"></label>
     <label style="margin-top:8px"><input type="checkbox" id="limIgnoreRise"> <b style="color:#f59e0b">ignoruj brak/słaby wzrost temperatury</b> (nie zgłaszaj NO/LOW_HEAT_RISE — grzanie nigdy nie staje z tego powodu)</label>
     <button id="btnLimits" class="btn">Zapisz limity</button>
   </section>

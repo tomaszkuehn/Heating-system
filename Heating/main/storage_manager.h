@@ -32,6 +32,7 @@ extern "C" {
  * sensors (preserves the old 1:1 behaviour). */
 #define HE_CFG_VER_RADIO_ID   2
 #define HE_CFG_VER_CTRL       3
+#define HE_CFG_VER_SENSOR_HOLD 4
 typedef struct {
     sensor_t            sensors[HE_MAX_SENSORS + 1]; /* idx 0..HE_MAX_SENSORS-1 = internal; idx HE_MAX_SENSORS = external */
     int                 sensor_count;                /* internal count 1..6 */
@@ -105,6 +106,23 @@ typedef struct {
     uint8_t             ctrl_mask;                 /* selection bitmask, 0 = all */
     uint8_t             control_mode;              /* control_mode_t             */
     int                 window_ignore_sec;         /* default 300, 0..3600       */
+    /* ---- cfg v4: anti-flap protection for intermittent sensor links (LoRa
+     * gaps of minutes..hours). Tail-appended for NVS upgrade safety: an older
+     * short-read blob zero-fills these and repair_config() (cfg_ver bump)
+     * seeds the defaults; 0 = feature off for the hold/grace/em-hold. Do NOT
+     * reorder above.
+     * data_hold: control keeps using sensors' last stored reading this long
+     *            after the newest good data (deliberate stale-data window).
+     * down_grace: further silence AFTER the hold expires before
+     *            FAULT_SENSOR_IFACE is raised (control is relay-OFF meanwhile).
+     * em_hold_min: once the sensor-fault emergency engages, it stays engaged
+     *            at least this many minutes even if data returns.
+     * recover: continuous good-data time required to auto-clear
+     *            FAULT_SENSOR_IFACE and release the emergency latch. */
+    int                 sensor_data_hold_sec;      /* default 900 (15 min), 0=off */
+    int                 sensor_down_grace_sec;     /* default 900 (15 min), 0=instant */
+    int                 sensor_em_hold_min;        /* default 30 min, 0=no stay  */
+    int                 sensor_recover_sec;        /* default 300 (5 min)        */
 } system_config_t;
 
 /* One minute sample record (all active sensors + system + external). */

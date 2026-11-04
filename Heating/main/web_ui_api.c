@@ -494,6 +494,9 @@ static esp_err_t h_state(httpd_req_t *req)
         "\"min_on_sec\":%d,\"min_off_sec\":%d,\"anti_osc_lock_sec\":%d,"
         "\"ignore_heat_rise\":%s,"
         "\"control_mode\":%u,\"window_ignore_sec\":%d,\"ctemp\":%.2f,"
+        "\"hold_active\":%s,\"hold_age_s\":%d,"
+        "\"sensor_data_hold_sec\":%d,\"sensor_down_grace_sec\":%d,"
+        "\"sensor_em_hold_min\":%d,\"sensor_recover_sec\":%d,"
         "\"time_synced\":%s,\"time_now\":%lld,\"device_ip\":\"%s\","
         "\"lora_garbage\":%u,\"lora_rejected\":%u,"
         "\"sensors\":[",
@@ -516,6 +519,9 @@ static esp_err_t h_state(httpd_req_t *req)
         (unsigned)snap.control_mode,
         s_cfg->window_ignore_sec,
         he_isnan(snap.control_temp) ? -99.0f : snap.control_temp,
+        snap.hold_active ? "true" : "false", snap.hold_age_s,
+        s_cfg->sensor_data_hold_sec, s_cfg->sensor_down_grace_sec,
+        s_cfg->sensor_em_hold_min, s_cfg->sensor_recover_sec,
         he_time_valid() ? "true" : "false",
         (long long)now_unix,
         network_device_ip(),
@@ -1004,6 +1010,16 @@ static esp_err_t h_limits(httpd_req_t *req)
         s_cfg->control_mode = (uint8_t)v;
     if (json_int(body, "window_ignore_sec", &v) && v >= 0 && v <= HE_WINDOW_IGNORE_MAX_SEC)
         s_cfg->window_ignore_sec = v;
+    /* cfg v4: anti-flap sensor-link protection (hold/grace/recover in s,
+     * emergency min-stay in minutes). */
+    if (json_int(body, "sensor_data_hold_sec", &v) && v >= 0 && v <= 86400)
+        s_cfg->sensor_data_hold_sec = v;
+    if (json_int(body, "sensor_down_grace_sec", &v) && v >= 0 && v <= 86400)
+        s_cfg->sensor_down_grace_sec = v;
+    if (json_int(body, "sensor_recover_sec", &v) && v >= 0 && v <= 86400)
+        s_cfg->sensor_recover_sec = v;
+    if (json_int(body, "sensor_em_hold_min", &v) && v >= 0 && v <= 1440)
+        s_cfg->sensor_em_hold_min = v;
     sensor_manager_set_ctrl_mask(s_cfg->ctrl_mask);
     sensor_manager_set_window_ignore(s_cfg->window_ignore_sec);
     storage_save_config(s_cfg);

@@ -130,6 +130,16 @@ extern "C" {
 #define HE_DEFAULT_EMERGENCY_PERIOD_SEC      3600  /* 60 min cycle                 */
 #define HE_DEFAULT_EMERGENCY_ON_SENSOR_FAULT false /* opt-in: emergency duty cycle when all sensors fail */
 
+/* ---- Anti-flap protection for intermittent sensor links (cfg v4) ----
+ * Timeline of a data gap (single sensor): 90 s -> QUAL_TIMEOUT; control keeps
+ * the last reading for data_hold; then a silent relay-OFF grace; only then
+ * FAULT_SENSOR_IFACE (and the opt-in cyclic emergency, latched for em_hold).
+ * Auto-clear requires `recover` seconds of continuous good data. */
+#define HE_DEFAULT_SENSOR_DATA_HOLD_SEC   900   /* 15 min stale-data control */
+#define HE_DEFAULT_SENSOR_DOWN_GRACE_SEC  900   /* 15 min silent-OFF before fault */
+#define HE_DEFAULT_SENSOR_EM_HOLD_MIN     30    /* min stay in emergency (min) */
+#define HE_DEFAULT_SENSOR_RECOVER_SEC     300   /* 5 min OK to trust data again */
+
 #ifdef __cplusplus
 }
 #endif

@@ -41,6 +41,11 @@ static int  s_em_phase_ms = 0;      /* emergency cycle phase        */
 static int32_t s_virtual_now = 0;   /* shared virtual wall clock (unix sec) */
 static int  s_virtual_frac_ms = 0;  /* sub-second remainder for the above  */
 
+/* --- Anti-flap / data-hold state (cfg v4) --- */
+static int64_t s_em_sensor_since_us = 0;  /* 0 = emergency not latched (min-stay) */
+static bool s_hold_active = false;        /* last tick steered on stale data?     */
+static int  s_hold_age_s = 0;             /* age of that data (for the UI banner) */
+
 static int control_now_ms(void) { return (int)((esp_timer_get_time() - s_boot_us) / 1000); }
 
 int control_current_hour(void)
@@ -100,7 +105,11 @@ void control_set_heating_disabled(bool disabled)
 
 bool control_heating_disabled(void) { return s_disabled; }
 
-void control_clear_fault(void) { fault_manager_clear(); }
+void control_clear_fault(void)
+{
+    s_em_sensor_since_us = 0;   /* UI "Wyczyść awarię": manual bypass wins over the min-stay latch */
+    fault_manager_clear();
+}
 
 static void enter_state(control_state_t next, control_state_t *target)
 {
@@ -207,9 +216,33 @@ void control_tick(int dt_ms)
         float tsel = sensor_manager_control_any_temp();
         if (!he_isnan(tsel)) tctrl = tsel;
     }
+    /* Data-hold (cfg v4): when the control source has no FRESH data (LoRa
+     * link gap), keep steering on the sensors' last stored reading for up to
+     * sensor_data_hold_sec instead of going blind after the 90 s timeout.
+     * A deliberate, bounded use of stale data. */
+    static bool s_hold_prev = false;
+    bool hold_active = false;
+    int  hold_age_ms = -1;
+    if (he_isnan(tctrl) && s_cfg->sensor_data_hold_sec > 0) {
+        float th = sensor_manager_control_hold_temp(cmode == CTRL_MODE_ANY,
+                                                    s_cfg->sensor_data_hold_sec,
+                                                    &hold_age_ms);
+        if (!he_isnan(th)) { tctrl = th; hold_active = true; }
+    }
+    if (hold_active != s_hold_prev) {
+        /* one-shot event-log entry per hold transition (INFO severity) */
+        storage_log_event(FAULT_NONE, 0,
+                          hold_active ? "data hold: steering on last sensor reading"
+                                      : "data hold released: fresh control data");
+        s_hold_prev = hold_active;
+    }
+    s_hold_active = hold_active;
+    s_hold_age_s = hold_active ? hold_age_ms / 1000 : 0;
     int hour = control_current_hour();
     int healthy = sensor_manager_healthy_count();
     int total = s_cfg->sensor_count;
+
+
 
     /* Advance thermal simulation if heating simulation is on (spec 8.2). */
     if (s_cfg->simulate_heating) {
@@ -244,19 +277,44 @@ void control_tick(int dt_ms)
     else if (s_cfg->emergency.enabled) {
         emergency_duty(&target_state, &target_relay, sdt);
     }
-    /* Precedence 4: active fault (unless emergency above handled it). With the
-     * emergency_on_sensor_fault option on, a total internal-sensor failure
-     * (FAULT_SENSOR_IFACE) keeps minimal anti-freeze heating via the same duty cycle
-     * instead of going relay-OFF; all other faults still drop to ST_FAULT/OFF. */
-    else if (fault_manager_current() != FAULT_NONE &&
-             fault_manager_current() != FAULT_NETWORK) {
-        if (s_cfg->emergency_on_sensor_fault &&
-            fault_manager_current() == FAULT_SENSOR_IFACE) {
+    /* Precedence 4: sensor-interface fault with the cyclic emergency engaged
+     * (emergency_on_sensor_fault on). The emergency is LATCHED for at least
+     * sensor_em_hold_min — a link recovering just 2 min later must not yank
+     * the device out of the anti-freeze cycle (anti-flap, cfg v4). The latch
+     * releases only when the min stay elapsed AND the fault has cleared (the
+     * fault side additionally requires a continuous `sensor_recover_sec` of
+     * good data before it reports cleared). Latch state: s_em_sensor_since_us
+     * at file scope. */
+    int64_t tnow_us = esp_timer_get_time();
+    int64_t em_hold_sec = (s_cfg->sensor_em_hold_min > 0)
+                          ? (int64_t)s_cfg->sensor_em_hold_min * 60 : 1800;
+    bool sensor_fault = fault_manager_current() == FAULT_SENSOR_IFACE;
+
+    /* Release check first: latch set, fault already cleared, stay satisfied. */
+    if (!sensor_fault && s_em_sensor_since_us &&
+        (tnow_us - s_em_sensor_since_us) >= em_hold_sec * 1000000LL) {
+        s_em_sensor_since_us = 0;
+    }
+    /* Precedence 4a: live fault / latch still engaged. */
+    else if (sensor_fault) {
+        if (s_cfg->emergency_on_sensor_fault) {
+            if (!s_em_sensor_since_us) s_em_sensor_since_us = tnow_us;
             emergency_duty(&target_state, &target_relay, sdt);
         } else {
             target_state = ST_FAULT;
             target_relay = false;
         }
+    }
+    /* Precedence 4b: fault cleared but min stay not yet elapsed. */
+    else if (s_em_sensor_since_us) {
+        emergency_duty(&target_state, &target_relay, sdt);
+    }
+    /* Precedence 4c: any other fault (STORAGE, NO/LOW_HEAT_RISE, SENSOR...) —
+     * relay-OFF for safety. FAULT_NETWORK stays out (informational only). */
+    else if (fault_manager_current() != FAULT_NONE &&
+             fault_manager_current() != FAULT_NETWORK) {
+        target_state = ST_FAULT;
+        target_relay = false;
     }
     /* Precedence 5: normal hysteresis. */
     else {
@@ -383,6 +441,8 @@ void control_get_snapshot(system_snapshot_t *out)
     out->active_fault = fault_manager_current();
     out->health_ok = (fault_manager_current() == FAULT_NONE || fault_manager_current() == FAULT_NETWORK)
                      && storage_healthy();
+    out->hold_active = s_hold_active;
+    out->hold_age_s = s_hold_age_s;
     out->uptime_ms = (uint32_t)((esp_timer_get_time() - s_boot_us) / 1000);
     out->simulation_mode = s_cfg ? (s_cfg->simulate_heating || s_cfg->simulate_sensors) : false;
 }

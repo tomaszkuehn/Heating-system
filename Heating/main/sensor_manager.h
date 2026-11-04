@@ -43,6 +43,16 @@ float sensor_manager_control_any_temp(void);
  * table; NaN entries are ignored. NAN when no control sensor has a value. */
 float sensor_manager_ctrl_minute_avg(const float *vals, int n);
 
+/* ---- Data-hold fallback (anti-flap, cfg v4) ----
+ * Control temperature from the sensors' LAST STORED reading while the link
+ * is silent, deliberately ignoring current quality (TIMEOUT/STALE expected).
+ * coldest=false -> weighted mean (AVG mode), true -> coldest of the ctrl set
+ * (ANY mode); mask semantics as the live paths (0 = all internal). Qualified
+ * readings must be at most hold_sec*1000 ms old (last_update_ms).
+ * *age_ms = ms since the OLDEST used reading (how stale our steering data
+ * is), or -1 when nothing qualifies (return NAN). */
+float sensor_manager_control_hold_temp(bool coldest, int hold_sec, int *age_ms);
+
 /* Apply the persisted control/window policy (called by web_ui_api/main after
  * loading or changing the config): mask semantics as above; ignore_sec is the
  * minimum time a window-detected sensor stays excluded (0 = immediate). */

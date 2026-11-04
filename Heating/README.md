@@ -460,6 +460,11 @@ overwritten` (patrz komentarz w `main/CMakeLists.txt`). Możliwe sekcje:
 - **Powiadomienia pokazują bieżące ustawienia** — odbiorcę/serwer
   SMTP/użytkownika/telefon/bramę SMS. Hasło SMTP nie jest pokazywane; puste
   pole hasła przy zapisie zachowuje bieżące (patrz sekcja E).
+- **Baner data-hold** — gdy łącze czujnika wymuli i sterowanie przechodzi na
+  ostatni zapisany pomiar (`sensor_data_hold_sec`, cfg v4), nad wykresem 24 h
+  pojawia się bursztynowy pasek **„⚠ Sterowanie wg ostatniego pomiaru
+  czujnika — wiek danych N min"**; znika natychmiast po powrocie świeżych
+  danych. Przebieg przerwy opisano przy `FAULT_SENSOR_IFACE` (sekcja Awarie).
 - **Profil dobowy** — grid **12 kolumn × 2 rzędy** (12 godzin w wierszu).
   Temperatura wyłączenia (OFF) nad załączenia (ON). Trzy sloty pamięci
   **na urządzeniu** (1/2/3) z jedno-klikowym zapisem i odczytem
@@ -540,7 +545,7 @@ Adres IP urządzenia jest też widoczny w nagłówku panelu „Pulpit" (obok sta
 ## Konfigurowalne limity i zabezpieczenia
 
 Karta **„Zabezpieczenia i limity"** w UI (domyślnie zwinięta) oraz endpoint
-`POST /api/limits` umożliwiają zmianę trzech parametrów ochronnych bez
+`POST /api/limits` umożliwiają zmianę parametrów ochronnych bez
 przekompilowywania firmware. Wszystkie są przechowywane w NVS jako część
 `system_config_t` i przetrwają restart.
 
@@ -549,6 +554,10 @@ przekompilowywania firmware. Wszystkie są przechowywane w NVS jako część
 | Karencja awarii grzania | `fault_grace_sec` | 300 s (5 min) | 60–3600 s | Czas od startu grzania, po którym `fault_manager` zaczyna oceniać skuteczność — daje instalacji czas na reakcję cieplną |
 | Maks. ciągłe grzanie | `max_on_sec` | 14400 s (4 h) | 300–86400 s | Po przekroczeniu tego czasu przekaźnik jest **twardo wyłączany** (niezależnie od histerezy) — ochrona przed „zawieszonym" termostatem |
 | Przerwa po maks. grzaniu | `max_on_break_sec` | 600 s (10 min) | 60–86400 s | Wymuszony postój po wyłączeniu przez `max_on_sec` — sterownik ignoruje temperaturę i nie załączy grzania, dopóki przerwa nie minie |
+| Steruj wg ostatniego pomiaru | `sensor_data_hold_sec` | 900 s (15 min) | 0–86400 s | **Data-hold (cfg v4):** czas od ostatniego dobrego pomiaru, przez który sterowanie używa ostatniej wartości czujników (baner bursztynowy) zamiast od razu zgłaszać awarię; 0 = wyłączone |
+| Cisza do awarii | `sensor_down_grace_sec` | 900 s (15 min) | 0–86400 s | Dodatkowe okno ciszy (przekaźnik OFF) po wygaśnięciu data-hold, zanim podniesiona zostanie `FAULT_SENSOR_IFACE`; 0 = awaria bez dodatkowego czekania |
+| Zaufanie przy powrocie | `sensor_recover_sec` | 300 s (5 min) | 0–86400 s | Tyle sekund **ciągłych** zdrowych danych wymaganych do auto-kasowania `FAULT_SENSOR_IFACE` i zwolnienia zawiasu awaryjnego |
+| Min. czas w trybie awaryjnym | `sensor_em_hold_min` | 30 min | 0–1440 min | Zawias: gdy przy awarii czujników zaangażuje się tryb awaryjny cykliczny, pozostaje w nim najmniej tyle minut — nawet jeśli dane wrócą szybciej; 0 = bez zawiasu   |
 
 **Mechanizm:** w `control_engine.c` zmienna `s_max_on_break_ms` odlicza pozostały
 czas przerwy (wraz z blokadą antyoscylacyjną na początku `control_tick()`).
@@ -757,26 +766,34 @@ więc szybkie oscylacje (np. `NO_HEAT_RISE` ↔ `SENSOR_IFACE`) nie zalewają lo
 tysiącami wpisów. Tylko jedna awaria jest aktywna naraz (o najwyższym
 priorytecie wykrycia).
 
-#### `FAULT_SENSOR_IFACE` — wszystkie czujniki niedostępne
-- **Warunek:** `total_sensors > 0` i `healthy_sensors == 0` — żaden czujnik nie
-  ma statusu `OK`/`SIMULATED` (np. cały interfejs UART padł, wszystkie w
-  `TIMEOUT`).
-- **Zakończenie:** **automatyczne** — gdy choć jeden czujnik wróci do zdrowia
-  (`healthy_sensors > 0`), awaria jest kasowana samoczynnie (analogicznie do
-  `FAULT_NETWORK`).
-- **Akcje i rezultat:** domyślnie stan sterownika przechodzi w `ST_FAULT`,
-  **przekaźnik wyłączony** (`target_relay = false`) — brak wiarygodnych danych =
-  brak grzania ze zwykłej histerezy. Bezwarunkowy tryb awaryjny cykliczny
-  (`emergency.enabled`) ma wyższy priorytet i podtrzymuje minimalne grzanie mimo
-  braku czujników (działa też przy sprawnych czujnikach). Dodatkowo opcja
-  **`emergency_on_sensor_fault`** (domyślnie **WYŁ**) zmienia zachowanie tylko
-  dla tej awarii: zamiast `ST_FAULT`/OFF utrzymuje ten sam duty cycle
-  (`on_seconds` co `period_seconds`) przez czas trwania `FAULT_SENSOR_IFACE` —
-  ochrona przeciwzamrożeniowa na wypadek długiej awarii czujników. Jest to
-  wariant **warunkowy** (tylko gdy awaria aktywna), w przeciwieństwie do
-  bezwarunkowego `emergency.enabled`; oba współdzielą parametry `on`/`period` i
-  akumulator fazy. Po odzyskaniu choć jednego czujnika awaria kasuje się
-  samoczynnie i sterowanie wraca do histerezy.
+#### `FAULT_SENSOR_IFACE` — wszystkie czujniki niedostępne (anty-migotaniowy, cfg v4)
+- **Timeline przerwy w danych** (np. ulotne łącze LoRa; czujnik pozostaje
+  `active`, tylko brakuje ramek):
+  1. `t=0` — ostatnia poprawna ramka; przez pierwsze **90 s** czujnik nadal
+     `OK` (`QUAL_TIMEOUT` dopiero po `HE_SENSOR_TIMEOUT_SEC`).
+  2. `0 < t ≤ sensor_data_hold_sec` (**data-hold**, domyślnie **900 s / 15 min**) —
+     sterowanie **wspiera się na last stored reading** (`sensor_manager_control_hold_temp`,
+     ważona średnia / najzimniejszy wg maski „Steruje") z jawnym flagiem —
+     **bursztynowy baner** nad wykresem 24 h + wpis w dzienniku zdarzeń
+     („data hold"). Stan pozostaje `IDLE/HEATING`, brak awarii, brak e-maila.
+     Ustalenie czujnika przez użytkownika (`active=false`) **pomija hold** — od
+     razu krok 3 (to świadome wyłączenie, nie przerwa łącza).
+  3. `data_hold < t ≤ data_hold + sensor_down_grace_sec` (grace, domyślnie
+     **900 s / 15 min**) — dane po oknie podparcia: sterowanie po NaN →
+     przekaźnik **OFF** (bezpieczna strona) w oczekiwaniu na powrót.
+  4. `t > data_hold + down_grace` — dopiero teraz podniesione
+     `FAULT_SENSOR_IFACE` → `ST_FAULT`/OFF albo (gdy `emergency_on_sensor_fault=WŁ`)
+     **tryb awaryjny cykliczny**, **zawiasowany** na co najmniej
+     `sensor_em_hold_min` (domyślnie **30 min**) — powrót danych nie wyrywa
+     urządzenia z cyklu ante-freeze.
+- **Zakończenie:** **automatyczne, z opóźnieniem zaufania** — awaria kasuje się
+  po **`sensor_recover_sec` (domyślnie 300 s / 5 min) ciągłych** zdrowych danych
+  (nie po pierwszej ramce — koniec flappingu); latch awaryjny zwalnia się gdy
+  min-stay minął. Ręczne „Wyczyść awarię" z UI kasuje awarię natychmiast i
+  anuluje również zawias.
+- **Pochodzenie flappingu (przed cfg v4):** warunek `healthy==0` podnosił
+  awarię na pierwszym ticku, a auto-clear na pierwszej ramce — przerwy
+  od minut włączały tryb awaryjny co chwilę.
 
 #### `FAULT_NO_HEAT_RISE` — brak wzrostu temperatury przy grzaniu
 - **Warunek:** grzanie aktywne dłużej niż karencja `fault_grace_sec` (domyślnie
@@ -846,7 +863,7 @@ awaryjny → awaria → histereza normalna. Każda **zmiana stanu** jest logowan
 | **Kill switch** | przycisk „Wyłącz ogrzewanie" (`/api/heating?disable=1`) z potwierdzeniem „Na pewno?" | ponowne włączenie tym samym przyciskiem (zielony „Włącz ogrzewanie") | najwyższy priorytet: przekaźnik OFF, stan `ST_IDLE`, ignoruje profil i BOOST; status pieca pokazuje szare koło z ✕ i podpis „Wyłączony" |
 | **Wybieg pompy** | przejście `HEATING → OFF` przy `pump.enabled` | upływ `total_seconds` | stan `ST_PUMP_OVERRUN`: krótkie impulsy (`impulse_seconds` co `period_seconds`) rozpraszają ciepło resztkowe |
 | **Tryb awaryjny cykliczny** | `emergency.enabled` | wyłączenie opcji | stan `ST_EMERGENCY_CYCLIC`: ON przez `on_seconds` co `period_seconds` niezależnie od czujników — ochrona przeciwzamrożeniowa gdy brak danych |
-| **Awaryjne grzanie po awarii czujników** | `emergency_on_sensor_fault` + aktywne `FAULT_SENSOR_IFACE` | odzyskanie choć jednego czujnika (auto-clear awarii) | jak wyżej — duty cycle `on_seconds`/`period_seconds`, ale **warunkowo** (tylko na czas awarii, domyślnie WYŁ); bezwarunkowy `emergency.enabled` ma priorytet |
+| **Awaryjne grzanie po awarii czujników** | `emergency_on_sensor_fault` + aktywne `FAULT_SENSOR_IFACE` | wyjście dopiero po min. `sensor_em_hold_min` **i** awarii auto-wyczyszczonej po `sensor_recover_sec` ciągłych OK | duty cycle `on_seconds`/`period_seconds`, **warunkowo** (tylko na czas awarii + zawias min-stay, domyślnie WYŁ); bezwarunkowy `emergency.enabled` ma priorytet |
 | **Tryb symulacji** | włączona symulacja czujników/ogrzewania | wyłączenie | stan `ST_SIMULATION`; decyzja ON/OFF liczona jak zwykle, ale GPIO nie jest sterowane (chyba że tryb mieszany) |
 
 ### D. Zdarzenia sieciowe i czasu (`network_manager.c`)

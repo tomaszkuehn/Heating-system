@@ -79,6 +79,10 @@ static void seed_defaults(system_config_t *c)
     c->wifi_sta_mode = false;
     strncpy(c->wifi_ssid, HE_DEFAULT_AP_SSID, sizeof(c->wifi_ssid) - 1);
     strncpy(c->wifi_pass, HE_DEFAULT_AP_PASS, sizeof(c->wifi_pass) - 1);
+    c->sensor_data_hold_sec   = HE_DEFAULT_SENSOR_DATA_HOLD_SEC;
+    c->sensor_down_grace_sec  = HE_DEFAULT_SENSOR_DOWN_GRACE_SEC;
+    c->sensor_em_hold_min     = HE_DEFAULT_SENSOR_EM_HOLD_MIN;
+    c->sensor_recover_sec     = HE_DEFAULT_SENSOR_RECOVER_SEC;
 }
 
 /* Clamp/repair a loaded configuration that may have been corrupted. */
@@ -151,6 +155,26 @@ static void repair_config(system_config_t *c)
     if (c->control_mode > HE_CTRL_MODE_MAX) c->control_mode = CTRL_MODE_AVG;
     if (c->window_ignore_sec < 0 || c->window_ignore_sec > HE_WINDOW_IGNORE_MAX_SEC)
         c->window_ignore_sec = HE_DEFAULT_WINDOW_IGNORE_SEC;
+    /* cfg v4: anti-flap sensor-link protection. An upgraded short-read blob
+     * zero-fills the new tail fields, which would mean "no hold, instant
+     * fault" (the pre-feature behaviour the flap fix is meant to replace) —
+     * so seed the defaults here like the other tail features. Also clamp
+     * same-size garbage values (overflow hazard when converted to ms). */
+    if (c->cfg_ver < HE_CFG_VER_SENSOR_HOLD) {
+        c->sensor_data_hold_sec  = HE_DEFAULT_SENSOR_DATA_HOLD_SEC;
+        c->sensor_down_grace_sec = HE_DEFAULT_SENSOR_DOWN_GRACE_SEC;
+        c->sensor_em_hold_min    = HE_DEFAULT_SENSOR_EM_HOLD_MIN;
+        c->sensor_recover_sec    = HE_DEFAULT_SENSOR_RECOVER_SEC;
+        c->cfg_ver = HE_CFG_VER_SENSOR_HOLD;
+    }
+    if (c->sensor_data_hold_sec < 0 || c->sensor_data_hold_sec > 86400)
+        c->sensor_data_hold_sec = HE_DEFAULT_SENSOR_DATA_HOLD_SEC;
+    if (c->sensor_down_grace_sec < 0 || c->sensor_down_grace_sec > 86400)
+        c->sensor_down_grace_sec = HE_DEFAULT_SENSOR_DOWN_GRACE_SEC;
+    if (c->sensor_em_hold_min < 0 || c->sensor_em_hold_min > 1440)
+        c->sensor_em_hold_min = HE_DEFAULT_SENSOR_EM_HOLD_MIN;
+    if (c->sensor_recover_sec < 0 || c->sensor_recover_sec > 86400)
+        c->sensor_recover_sec = HE_DEFAULT_SENSOR_RECOVER_SEC;
     /* Panel auth: an upgraded/short-read blob leaves these empty -> defaults.
      * A too-short password (post-upgrade zero-fill artefact) is also repaired. */
     if (c->panel_user[0] == '\0')

@@ -166,6 +166,17 @@ function renderDashboard(s) {
   $('sensOk').textContent = (s.sensors || []).filter(x => x.quality === 'OK' || x.quality === 'SIMULATED').length + '/' + (s.sensors||[]).length;
   $('uptime').textContent = fmtUp(s.uptime);
   $('simBanner').classList.toggle('hidden', !s.sim);
+  /* Data-hold banner (anti-flap): steering on the last stored sensor reading. */
+  const hb = $('holdBanner');
+  if (hb) {
+    if (s.hold_active) {
+      hb.classList.remove('hidden');
+      hb.textContent = '⚠ Sterowanie wg ostatniego pomiaru czujnika — wiek danych ' +
+        ((s.hold_age_s || 0) >= 60 ? Math.round((s.hold_age_s || 0) / 60) + ' min' : (s.hold_age_s || 0) + ' s');
+    } else {
+      hb.classList.add('hidden');
+    }
+  }
 
   /* Flash (LittleFS data partition) usage + wear indicator. */
   const fb = $('flashBar'), fwEl = $('flashWear');
@@ -595,6 +606,11 @@ function renderModes(s) {
     /* Control-sensor mode + open-window ignore time (cfg v3). */
     if ($('limCtrlMode')) $('limCtrlMode').value = String(s.control_mode || 0);
     if ($('limWinIg'))    $('limWinIg').value    = (s.window_ignore_sec || 300);
+    /* Anti-flap sensor-link protection (cfg v4). */
+    if ($('limHold'))      $('limHold').value      = ('sensor_data_hold_sec' in s) ? s.sensor_data_hold_sec : 900;
+    if ($('limDownGrace')) $('limDownGrace').value = ('sensor_down_grace_sec' in s) ? s.sensor_down_grace_sec : 900;
+    if ($('limRecover'))   $('limRecover').value   = ('sensor_recover_sec' in s) ? s.sensor_recover_sec : 300;
+    if ($('limEmHold'))    $('limEmHold').value    = ('sensor_em_hold_min' in s) ? s.sensor_em_hold_min : 30;
     /* per-event-type e-mail subscription (safe booleans). */
     if ($('nEvFaults'))  $('nEvFaults').checked  = s.notify_ev.faults;
     if ($('nEvRestart')) $('nEvRestart').checked = s.notify_ev.restart;
@@ -1385,7 +1401,11 @@ $('btnLimits').onclick = () => post('/api/limits', {
   anti_osc_lock_sec: +$('limAntiosc').value,
   ignore_heat_rise: $('limIgnoreRise').checked,
   control_mode: +$('limCtrlMode').value,
-  window_ignore_sec: +$('limWinIg').value
+  window_ignore_sec: +$('limWinIg').value,
+  sensor_data_hold_sec: +$('limHold').value,
+  sensor_down_grace_sec: +$('limDownGrace').value,
+  sensor_recover_sec: +$('limRecover').value,
+  sensor_em_hold_min: +$('limEmHold').value
 }, true).then(() => refresh());
 
 /* Collapsible config sections: clicking the header toggles its card. */
